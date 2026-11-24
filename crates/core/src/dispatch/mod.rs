@@ -393,6 +393,13 @@ impl State {
         &mut self.core
     }
 
+    /// The phrases a model may choose from for a transcript that matches nothing; see
+    /// [`crate::unmatched_speech_commands`].
+    #[must_use]
+    pub fn unmatched_speech_commands(&self, phrase: &str) -> Option<Vec<String>> {
+        crate::unmatched_speech_commands(&self.core, phrase)
+    }
+
     /// The on-screen keyboard, for drawing it.
     #[must_use]
     pub const fn keyboard(&self) -> &crate::keyboard::Keyboard {
@@ -1805,8 +1812,9 @@ fn launcher_step(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
                 ButtonName::DpadUp,
                 ButtonName::DpadDown,
             ];
-            if launcher.is_invitation() && !own.contains(name) {
-                // The invitation leaves menus, mouse mode and shortcuts working.
+            // View passes through so its double tap toggles mouse mode with the
+            // launcher open; the invitation also leaves menus and shortcuts working.
+            if !own.contains(name) && (launcher.is_invitation() || *name == ButtonName::Select) {
                 return false;
             }
             if *button == ButtonState::Pressed && !state.choice_buttons.contains(name) {

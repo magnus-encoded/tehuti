@@ -434,6 +434,9 @@ fn start_session(
         &mut compositor,
     )?;
     compositor.set_launch_socket(socket_name.clone());
+    if driver.is_none() {
+        restore_session(&mut compositor);
+    }
     if driver.is_none()
         && let Err(error) = insert_controller_watch(&event_loop)
     {
@@ -484,6 +487,7 @@ fn start_session(
 
     let applications_watch = insert_applications_watch(&event_loop, &compositor.destination_paths().data);
     let menu_watch = insert_menu_watch(&event_loop);
+    install_speech_resolver(&event_loop, &mut compositor);
     let mut data = LoopData {
         applications_watch,
         menu_watch,
@@ -521,9 +525,40 @@ fn start_session(
     data.compositor.advance_time();
     let result = run(&mut event_loop, &mut data, child);
     let code = data.exit_code();
+    if data.driver.is_none()
+        && tehuti::session_restore::save_due(
+            result.is_ok(),
+            data.compositor.quit_requested(),
+            tehuti::session_restore::enabled(),
+        )
+    {
+        save_session(&data.compositor);
+    }
     shut_down(event_loop, data);
     result?;
     Ok(code)
+}
+
+fn restore_session(compositor: &mut tehuti::state::Compositor) {
+    if !tehuti::session_restore::enabled() {
+        return;
+    }
+    let taken = tehuti::session_restore::Store::from_env()
+        .map_err(|error| error.to_string())
+        .and_then(|store| store.take().map_err(|error| error.to_string()));
+    match taken {
+        Ok(Some(saved)) => compositor.begin_session_restore(&saved),
+        Ok(None) => {}
+        Err(error) => warn!(%error, "session restore skipped"),
+    }
+}
+
+fn save_session(compositor: &tehuti::state::Compositor) {
+    let saved = compositor.session_to_save();
+    let result = tehuti::session_restore::Store::from_env().and_then(|store| store.save(&saved));
+    if let Err(error) = result {
+        warn!(%error, "session not saved");
+    }
 }
 
 fn install_xwayland(
@@ -772,35 +807,24 @@ fn reconnect_controller(data: &mut LoopData, handle: &calloop::LoopHandle<'_, Lo
             retry_at: Duration::ZERO,
         },
     );
-    let (state, effect) = controller::discover(
+    let (state, notification) = controller::scan_discovery(
         state,
-        controller::DiscoveryInput::Poll {
-            now: data.discovery_epoch.elapsed(),
-            rescan: core::mem::take(&mut data.rescan_controller),
+        data.discovery_epoch.elapsed(),
+        core::mem::take(&mut data.rescan_controller),
+        || {
+            insert_controllers(
+                handle,
+                data.virtual_pad.as_deref(),
+                &mut data.controllers,
+                &mut data.controller_tokens,
+            );
+            !data.controllers.is_empty()
         },
     );
     data.discovery = state;
-    if effect == Some(controller::DiscoveryEffect::Scan) {
-        insert_controllers(
-            handle,
-            data.virtual_pad.as_deref(),
-            &mut data.controllers,
-            &mut data.controller_tokens,
-        );
-        if !data.controllers.is_empty() {
-            let searching = core::mem::replace(
-                &mut data.discovery,
-                controller::Discovery::Attached {
-                    retry_at: Duration::ZERO,
-                },
-            );
-            let (attached, notification) = controller::discover(searching, controller::DiscoveryInput::Found);
-            data.discovery = attached;
-            if notification == Some(controller::DiscoveryEffect::Reconnected) {
-                data.compositor
-                    .controller_input(tehuti_core::controller::Input::Reconnected);
-            }
-        }
+    if notification == Some(controller::DiscoveryEffect::Reconnected) {
+        data.compositor
+            .controller_input(tehuti_core::controller::Input::Reconnected);
     }
     sync_controller_names(data);
 }
@@ -963,6 +987,56 @@ fn insert_applications_watch(
         |error| warn!(%error, "applications watch unavailable; desktop entries reload only on restart"),
     )
     .ok()
+}
+
+/// Starts the speech resolver when a key is set and curl exists. The worker thread posts;
+/// its replies come back through a channel the loop drains.
+fn install_speech_resolver(event_loop: &EventLoop<'static, LoopData>, compositor: &mut Compositor) {
+    use tehuti::speech::{
+        resolver::{ApiKey, Curl, OptIn, Resolver, TurnLog},
+        resolver_worker::{Link, Worker},
+    };
+    let Some(key) = ApiKey::from_env() else {
+        return;
+    };
+    let transport = Curl::default();
+    if !transport.available() {
+        return;
+    }
+    let Ok(opt_in) = OptIn::from_env() else {
+        return;
+    };
+    let (sender, receiver) = calloop::channel::channel();
+    let inserted = event_loop.handle().insert_source(receiver, |event, (), data| {
+        if let calloop::channel::Event::Msg(reply) = event {
+            data.compositor.resolver_replied(&reply);
+            data.pacing.input_arrived = true;
+        }
+    });
+    if let Err(error) = inserted {
+        warn!(%error, "speech resolver unavailable");
+        return;
+    }
+    let sweep = event_loop.handle().insert_source(
+        calloop::timer::Timer::from_duration(Duration::from_millis(250)),
+        |_, (), data| {
+            data.compositor.abandon_stale_resolver(
+                std::time::Instant::now(),
+                tehuti::speech::resolver_worker::HELD_LIMIT,
+            );
+            calloop::timer::TimeoutAction::ToDuration(Duration::from_millis(250))
+        },
+    );
+    if let Err(error) = sweep {
+        warn!(%error, "speech resolver unavailable");
+        return;
+    }
+    match Worker::spawn(Resolver::new(transport, Some(key)), move |reply| {
+        sender.send(reply).is_ok()
+    }) {
+        Ok(worker) => compositor.set_speech_resolver(Link::new(worker, opt_in, TurnLog::from_env().ok())),
+        Err(error) => warn!(%error, "speech resolver unavailable"),
+    }
 }
 
 /// Watches the menu config; a failure leaves the menu loaded until restart.

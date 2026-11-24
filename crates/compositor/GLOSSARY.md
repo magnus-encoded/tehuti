@@ -22,5 +22,3 @@
 | Secret destination | One live Wayland surface during one focus generation; secret insertion checks it again after lookup. |
 | Launch | One child process Tehuti starts for the user: program, arguments, label and the app id its window carries. A specialised launch, such as a terminal with its own class, gets its own context through that app id. |
 | Launch owner | The single module (`launch`) that starts launches, tracks them until they exit or crash, and produces the notice when one closes right away. Tests use its fake spawner. |
-
-Starting without a controller logs a warning. Discovery continues every 250 ms and on input directory changes until a controller can be grabbed.

@@ -419,6 +419,33 @@ impl State {
                 .collect(),
         }
     }
+
+    /// Who gets `button` on the virtual pad, from the mirror's own held list. The mirror sees raw
+    /// events before the core does, so Guide, the held buttons and the chord Start come from it.
+    #[must_use]
+    pub fn pad_button_owner(
+        &self,
+        held: &[ButtonName],
+        start_in_chord: bool,
+        button: ButtonName,
+        phase: Phase,
+    ) -> Owner {
+        let mut view = self.ownership_view(false);
+        view.passthrough = true;
+        view.guide_held = held.contains(&ButtonName::Guide);
+        view.start_in_chord = start_in_chord;
+        view.held_buttons = held.to_vec();
+        owner(&view, button, phase)
+    }
+}
+
+impl Owner {
+    /// Hides Guide unless forwarded, chord Start, and a winning Talk binding.
+    #[must_use]
+    pub const fn hides_from_pad(self, guide_forwarded: bool) -> bool {
+        matches!(self, Self::Tehuti(Why::ChordStart) | Self::Talk(_))
+            || (matches!(self, Self::Tehuti(Why::EscapeChord)) && !guide_forwarded)
+    }
 }
 
 #[cfg(test)]
@@ -1076,5 +1103,32 @@ mod tests {
             owner(&view, ButtonName::Guide, Phase::Pressed),
             Owner::Tehuti(Why::EscapeChord)
         );
+    }
+
+    proptest! {
+        /// The virtual pad hides chord Start across generated configurations and held buttons.
+        #[test]
+        fn the_pad_hook_hides_what_tehuti_owns(forwarded in any::<bool>(), others in buttons(), scenario in scenario()) {
+            let state = scenario.state();
+            let held: Vec<ButtonName> = others
+                .into_iter()
+                .filter(|held| !matches!(held, ButtonName::Guide | ButtonName::Start | ButtonName::Record))
+                .chain([ButtonName::Guide, ButtonName::Start])
+                .collect();
+            let start = state.pad_button_owner(&held, false, ButtonName::Start, Phase::Pressed);
+            prop_assert_eq!(start, Owner::Tehuti(Why::ChordStart));
+            prop_assert!(start.hides_from_pad(forwarded));
+            let release = state.pad_button_owner(&[ButtonName::Guide], true, ButtonName::Start, Phase::Released);
+            prop_assert!(release.hides_from_pad(forwarded));
+        }
+    }
+
+    #[test]
+    fn the_pad_hook_talks_only_once_every_member_is_held() {
+        let mut state = State::default();
+        state.set_controller_push_to_talk(Some(ButtonName::Record));
+        let talk = state.pad_button_owner(&[ButtonName::Record], false, ButtonName::Record, Phase::Pressed);
+        assert_eq!(talk, Owner::Talk(TalkSource::Controller));
+        assert!(talk.hides_from_pad(false));
     }
 }

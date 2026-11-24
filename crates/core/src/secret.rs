@@ -124,6 +124,22 @@ pub trait SecretProvider: Send {
     /// The provider is unavailable or the requested entry cannot be read.
     fn lookup(&mut self, reference: &SecretReference) -> Result<SecretValue, SecretProviderUnavailable>;
 
+    /// Searches entry names for a spoken title, best match first, never
+    /// returning values. `context` ranks ties and near matches.
+    ///
+    /// Blocks like [`Self::list_labels`]; call it off the compositor thread.
+    ///
+    /// # Errors
+    /// The provider is unavailable or the store stays locked.
+    fn search(
+        &mut self,
+        query: &str,
+        context: &crate::secret_search::SearchContext,
+    ) -> Result<Vec<String>, SecretProviderUnavailable> {
+        let labels = self.list_labels()?;
+        Ok(crate::secret_search::rank(&labels, query, context))
+    }
+
     /// Lists the labels of the stored entries, never their values.
     ///
     /// A locked store is unlocked first, because some stores keep labels

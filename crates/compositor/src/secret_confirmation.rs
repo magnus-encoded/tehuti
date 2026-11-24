@@ -2,19 +2,14 @@
 
 use core::time::Duration;
 
+use tehuti_core::secret_flow::{SecretEffect, SecretFlow, SecretInput};
+
 struct RedactedSecretProvider(Box<dyn tehuti_core::secret::SecretProvider>);
 
 impl core::fmt::Debug for RedactedSecretProvider {
     fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         formatter.write_str("SecretProvider(<redacted>)")
     }
-}
-
-#[derive(Debug, Default)]
-struct SecretConfirmationState {
-    frame_submitted: bool,
-    armed: bool,
-    confirm_pressed: bool,
 }
 
 #[derive(Debug)]
@@ -28,15 +23,12 @@ type SecretLookupReceiver = std::sync::mpsc::Receiver<SecretLookupResult>;
 
 #[derive(Debug)]
 pub struct SecretConfirmation<S> {
-    gate: tehuti_core::secret::SecretConfirmationGate,
+    flow: SecretFlow,
     provider: Option<RedactedSecretProvider>,
     lookup: Option<SecretLookupReceiver>,
     focus_generation: u64,
     surface_id: u64,
     focus_surface: Option<S>,
-    confirmation_label: Option<(String, String)>,
-    confirmation: SecretConfirmationState,
-    notice_until: Option<Duration>,
 }
 
 impl<S: PartialEq> Default for SecretConfirmation<S> {
@@ -49,7 +41,7 @@ impl<S: PartialEq> SecretConfirmation<S> {
     #[must_use]
     pub fn new() -> Self {
         Self {
-            gate: tehuti_core::secret::SecretConfirmationGate::new(),
+            flow: SecretFlow::new(),
             provider: Some(RedactedSecretProvider(Box::new(
                 tehuti_core::secret::DenySecretProvider,
             ))),
@@ -57,9 +49,6 @@ impl<S: PartialEq> SecretConfirmation<S> {
             focus_generation: 0,
             surface_id: 0,
             focus_surface: None,
-            confirmation_label: None,
-            confirmation: SecretConfirmationState::default(),
-            notice_until: None,
         }
     }
 
@@ -69,32 +58,32 @@ impl<S: PartialEq> SecretConfirmation<S> {
 
     pub fn focus_changed(&mut self, focus: Option<S>) {
         self.focus_generation = self.focus_generation.wrapping_add(1);
-        self.gate.cancel();
-        self.confirmation_label = None;
-        self.confirmation.frame_submitted = false;
-        self.confirmation.armed = false;
         if self.focus_surface != focus {
             self.surface_id = self.surface_id.wrapping_add(1);
             self.focus_surface = focus;
         }
+        // The destination used here is irrelevant: this input ignores it.
+        let _effects = self.flow.step(SecretInput::FocusChanged, Duration::ZERO, None);
     }
 
-    pub const fn confirm_pressed(&mut self, pressed: bool) {
-        self.confirmation.confirm_pressed = pressed;
+    pub fn confirm_pressed(&mut self, pressed: bool) {
+        let _effects = self
+            .flow
+            .step(SecretInput::ButtonHeld(pressed), Duration::ZERO, None);
     }
 
-    pub const fn frame_submitted(&mut self) {
-        self.confirmation.frame_submitted = true;
-        self.confirmation.armed = !self.confirmation.confirm_pressed;
+    pub fn frame_submitted(&mut self, focus: Option<&S>, now: Duration) {
+        let current = self.current_secret_destination(focus);
+        let _effects = self.flow.step(SecretInput::FramePresented, now, current);
     }
 
-    pub const fn delivery_unavailable(&mut self, now: Duration) {
-        self.notice_until = now.checked_add(Duration::from_secs(3));
+    pub fn delivery_unavailable(&mut self, now: Duration) {
+        let _effects = self.flow.step(SecretInput::DeliveryFailed, now, None);
     }
 
     #[must_use]
     pub fn unavailable(&self, now: Duration) -> bool {
-        self.notice_until.is_some_and(|until| now < until)
+        self.flow.notice_active(now)
     }
 
     pub fn request(
@@ -104,31 +93,25 @@ impl<S: PartialEq> SecretConfirmation<S> {
         focus: Option<&S>,
         now: Duration,
     ) -> bool {
-        if self.lookup.is_some() || self.provider.is_none() {
-            return false;
-        }
-        let Some(destination) = self.current_secret_destination(focus) else {
-            return false;
-        };
-        let entry_label = sanitize_confirmation_label(&reference.entry, 21);
-        let requested = self
-            .gate
-            .request(reference, destination, now, core::time::Duration::from_secs(20))
-            .is_some();
-        if requested {
-            self.confirmation_label = Some((entry_label, sanitize_confirmation_label(target, 29)));
-            self.confirmation.frame_submitted = false;
-            self.confirmation.armed = false;
-        }
-        requested
+        let current = self.current_secret_destination(focus);
+        let effects = self.flow.step(
+            SecretInput::Request {
+                reference,
+                target: target.into(),
+            },
+            now,
+            current,
+        );
+        !effects.contains(&SecretEffect::Refused)
     }
 
     #[must_use]
     pub fn text(&self, focus: Option<&S>, now: Duration) -> Option<String> {
-        let (entry, target) = self.confirmation_label.as_ref()?;
-        let destination = self.current_secret_destination(focus)?;
-        let _pending = self.gate.pending(now, destination)?;
-        Some(format!("CONFIRM SECRET: {entry}\nTARGET: {target}"))
+        let prompt = self.flow.prompt(now, self.current_secret_destination(focus))?;
+        Some(format!(
+            "CONFIRM SECRET: {}\nTARGET: {}",
+            prompt.entry, prompt.target
+        ))
     }
 
     fn current_secret_destination(
@@ -146,47 +129,30 @@ impl<S: PartialEq> SecretConfirmation<S> {
     }
 
     pub fn button(&mut self, state: tehuti_protocol::ButtonState, focus: Option<&S>, now: Duration) -> bool {
-        let Some(destination) = self.current_secret_destination(focus) else {
-            return false;
-        };
-        if self.gate.pending(now, destination).is_none() {
-            return false;
-        }
-        match state {
-            tehuti_protocol::ButtonState::Released => {
-                self.confirmation.confirm_pressed = false;
-                if self.confirmation.frame_submitted {
-                    self.confirmation.armed = true;
-                }
+        let current = self.current_secret_destination(focus);
+        let _held = self.flow.step(
+            SecretInput::ButtonHeld(state == tehuti_protocol::ButtonState::Pressed),
+            now,
+            current,
+        );
+        let effects = self.flow.step(SecretInput::Button(state), now, current);
+        let mut consumed = false;
+        for effect in effects {
+            match effect {
+                SecretEffect::ConsumeButton => consumed = true,
+                SecretEffect::StartLookup(authorization) => self.start_lookup(authorization, now),
+                SecretEffect::Deliver(_) | SecretEffect::StoreLocked | SecretEffect::Refused => {}
             }
-            tehuti_protocol::ButtonState::Pressed if self.confirmation.armed => {
-                self.confirmation.confirm_pressed = true;
-                self.confirmation.armed = false;
-                let _consumed = self.confirm_pending_secret(focus, now);
-            }
-            tehuti_protocol::ButtonState::Pressed => self.confirmation.confirm_pressed = true,
         }
-        true
+        consumed
     }
 
-    fn confirm_pending_secret(&mut self, focus: Option<&S>, now: Duration) -> bool {
-        let Some(destination) = self.current_secret_destination(focus) else {
-            return false;
-        };
-        let Some(confirmation_id) = self
-            .gate
-            .pending(now, destination)
-            .map(tehuti_core::secret::PendingSecretDelivery::confirmation_id)
-        else {
-            return false;
-        };
-        let Some(authorization) = self.gate.confirm(confirmation_id, now, destination) else {
-            return true;
-        };
-        self.confirmation_label = None;
+    /// Runs the provider lookup off-thread; a failure to start counts as a
+    /// failed lookup.
+    fn start_lookup(&mut self, authorization: tehuti_core::secret::AuthorizedSecretLookup, now: Duration) {
         let Some(mut provider) = self.provider.take() else {
-            self.notice_until = now.checked_add(Duration::from_secs(3));
-            return true;
+            let _delivered = self.finish_lookup(false, now, None);
+            return;
         };
         let (sender, receiver) = std::sync::mpsc::channel();
         let spawned = std::thread::Builder::new()
@@ -200,37 +166,42 @@ impl<S: PartialEq> SecretConfirmation<S> {
                 });
             });
         if spawned.is_err() {
-            self.notice_until = now.checked_add(Duration::from_secs(3));
-            return true;
+            let _delivered = self.finish_lookup(false, now, None);
+            return;
         }
         self.lookup = Some(receiver);
-        true
+    }
+
+    fn finish_lookup(
+        &mut self,
+        found: bool,
+        now: Duration,
+        current: Option<tehuti_core::secret::SecretDestination>,
+    ) -> bool {
+        self.flow
+            .step(SecretInput::LookupFinished { found }, now, current)
+            .iter()
+            .any(|effect| matches!(effect, SecretEffect::Deliver(_)))
     }
 
     #[must_use]
     pub fn poll(&mut self, focus: Option<&S>, now: Duration) -> Option<Delivery> {
-        let Some(receiver) = &self.lookup else {
-            return None;
-        };
-        let lookup_result = match receiver.try_recv() {
-            Ok(result) => Some(result),
-            Err(std::sync::mpsc::TryRecvError::Empty) => None,
+        let receiver = self.lookup.as_ref()?;
+        let lookup = match receiver.try_recv() {
+            Ok(result) => result,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return None,
             Err(std::sync::mpsc::TryRecvError::Disconnected) => {
                 self.lookup = None;
-                self.notice_until = now.checked_add(Duration::from_secs(3));
+                let _delivered = self.finish_lookup(false, now, None);
                 return None;
             }
         };
-        let lookup = lookup_result?;
         self.lookup = None;
         self.provider = Some(lookup.provider);
-        let Some(secret) = lookup.value.ok() else {
-            self.notice_until = now.checked_add(Duration::from_secs(3));
-            return None;
-        };
-        if self.current_secret_destination(focus) != Some(lookup.authorization.destination) {
-            return None;
-        }
+        let current = self.current_secret_destination(focus);
+        let secret = lookup.value.ok();
+        let deliver = self.finish_lookup(secret.is_some(), now, current);
+        let secret = secret.filter(|_| deliver)?;
         Some(Delivery {
             destination: lookup.authorization.destination,
             secret,
@@ -263,25 +234,4 @@ impl Delivery {
             send,
         )
     }
-}
-
-fn sanitize_confirmation_label(value: &str, maximum: usize) -> String {
-    let mut label: String = value
-        .chars()
-        .map(|character| {
-            if character.is_ascii_graphic() || character == ' ' {
-                character
-            } else {
-                '?'
-            }
-        })
-        .take(maximum)
-        .collect();
-    if value.chars().count() > maximum {
-        label.push_str("...");
-    }
-    if label.is_empty() {
-        label.push_str("unnamed");
-    }
-    label
 }

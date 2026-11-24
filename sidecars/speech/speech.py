@@ -1,5 +1,7 @@
 #!/usr/bin/env python3
 """Capture on core commands; return transcription without delivering input."""
+from difflib import SequenceMatcher
+from pathlib import Path
 import json
 import os
 import re
@@ -12,6 +14,7 @@ import tempfile
 import threading
 import time
 import wave
+import unicodedata
 
 DEFAULT_LANGUAGE = "en"
 MAX_HOTWORD_TOKENS = 64
@@ -23,6 +26,48 @@ MAX_PENDING_FINALS = 4
 INTERIM_WINDOW_BYTES = 16000 * 2 * 5
 DEFAULT_SPEECH_TAIL_MS = 150
 MAX_SPEECH_TAIL_MS = MAX_AUDIO_SECONDS * 1000
+
+
+VERB_LOCALES = set(Path(__file__).with_name("verb-locales.txt").read_text().split())
+MIN_VERB_SOUND_SIMILARITY = 0.85
+
+
+def match_verb(text, verbs):
+    """Match the first word; equal scores keep registration order."""
+    def sound(word):
+        word = unicodedata.normalize("NFD", word.casefold())
+        return "".join(c for c in word if c.isalnum()).translate(
+            str.maketrans({"c": "k", "q": "k", "æ": "e", "ø": "o"}))
+
+    parts = text.lstrip().split(maxsplit=1)
+    if len(parts) != 2 or not (remainder := parts[1].lstrip(" \t\r\n,.:;!?")):
+        return None
+    heard = sound(parts[0])
+    best, score = None, MIN_VERB_SOUND_SIMILARITY
+    for verb in verbs:
+        word = sound(verb if isinstance(verb, str) else verb["word"])
+        if not word or (heard != word and
+                        (heard.startswith(word) or min(len(heard), len(word)) < 5)):
+            continue
+        similarity = SequenceMatcher(None, heard, word, autojunk=False).ratio()
+        if similarity >= MIN_VERB_SOUND_SIMILARITY and (best is None or similarity > score):
+            best, score = (verb, remainder), similarity
+    return best
+
+
+def valid_verbs(verbs):
+    if not isinstance(verbs, list):
+        return False
+    for verb in verbs:
+        word = verb if isinstance(verb, str) else verb.get("word") if isinstance(verb, dict) else None
+        if not isinstance(word, str) or not word.isalpha() or len(word) > 32:
+            return False
+        if isinstance(verb, dict):
+            if (set(verb) - {"word", "locale", "hints"} or verb.get("locale") not in VERB_LOCALES
+                    or not isinstance(verb.get("hints", []), list) or len(verb.get("hints", [])) > 16
+                    or any(not isinstance(hint, str) or "\0" in hint for hint in verb.get("hints", []))):
+                return False
+    return True
 
 
 HALLUCINATION = re.compile(
@@ -303,12 +348,15 @@ class Recording:
 
 class Take:
     """One push-to-talk, recorded from every source at once."""
-    def __init__(self, session, prompt="", language=DEFAULT_LANGUAGE, remote=None):
+    def __init__(self, session, prompt="", language=DEFAULT_LANGUAGE, remote=None, verbs=()):
+        self.verbs = list(verbs)
+        self.verb_locale = None
         self.remote = remote  # the backend, resolved once: a socket path, else the local model
         self.session = session
         self.prompt = prompt
         self.language = language
         self.recordings = []
+        self.completed = threading.Event()
         self.cancelled = threading.Event()
         self.interim_abort = threading.Event()
         self.worker = None
@@ -331,7 +379,8 @@ def choose(recordings):
 
 
 class Speech:
-    def __init__(self, model, sources=None, remotes=None):
+    def __init__(self, model, sources=None, remotes=None, clock=time.monotonic):
+        self.clock = clock
         self.model = model
         self.remotes = remote_sockets if remotes is None else remotes
         self.hotwords = ""
@@ -348,6 +397,35 @@ class Speech:
         self.decoding = False
         self.finals_pending = 0
         self.interims = threading.BoundedSemaphore(1)
+
+    def warm(self):
+        """Run every decode the first take uses, so its kernels load before "ready".
+
+        Silence never reaches the decoder, so the pass forces one past the no-speech
+        gates, at the beam widths of finals (5) and interims (1), plus the VAD path.
+        A failed warm-up is logged and startup carries on: the first take is then
+        slow, never lost."""
+        try:
+            self._warm()
+        except Exception as error:
+            log(f"speech warm-up failed, first take will be slow: {error!r}", level="WARNING")
+
+    def _warm(self):
+        tone = b"".join(int(8000 * ((i % 40) / 20 - 1)).to_bytes(2, "little", signed=True)
+                        for i in range(16000))
+        self.transcribe_audio(tone, retry=False)
+        for beam_size in (5, 1):
+            with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
+                with wave.open(recording.name, "wb") as output:
+                    output.setnchannels(1)
+                    output.setsampwidth(2)
+                    output.setframerate(16000)
+                    output.writeframes(tone)
+                segments, _ = self.model.transcribe(
+                    recording.name, beam_size=beam_size, language=DEFAULT_LANGUAGE,
+                    vad_filter=False, temperature=0, no_speech_threshold=None,
+                    log_prob_threshold=None, condition_on_previous_text=False)
+                list(segments)
 
     def set_vocabulary(self, vocabulary):
         words, seen = [], set()
@@ -374,11 +452,11 @@ class Speech:
             self.releasing.worker.join()
             self.releasing = None
 
-    def start(self, session, prompt="", language=DEFAULT_LANGUAGE):
+    def start(self, session, prompt="", language=DEFAULT_LANGUAGE, verbs=()):
         self.cancel_tail()
         if self.capture is not None:
             return
-        take = Take(session, prompt, language, self.remotes().get(language))
+        take = Take(session, prompt, language, self.remotes().get(language), verbs)
         for source in self.sources():
             target = [] if source is None else ["--target", source]
             try:
@@ -420,8 +498,10 @@ class Speech:
             capture.send_signal(signal.SIGINT)
 
     def transcribe_audio(self, audio, prompt="", *, retry=True, abort=None, beam_size=5,
-                         language=DEFAULT_LANGUAGE, stats=None):
-        priming = {"hotwords": self.hotwords} if self.hotwords else {}
+                         language=DEFAULT_LANGUAGE, stats=None, hotwords=None,
+                         single_pass=False):
+        words = self.hotwords if hotwords is None else hotwords
+        priming = {"hotwords": words} if words else {}
         if prompt:
             priming["initial_prompt"] = prompt
         with tempfile.NamedTemporaryFile(suffix=".wav") as recording:
@@ -431,7 +511,10 @@ class Speech:
                 output.setframerate(16000)
                 output.writeframes(audio)
             segments, _ = self.model.transcribe(
-                recording.name, beam_size=beam_size, language=language, vad_filter=True, **priming,
+                recording.name, beam_size=beam_size, language=language, vad_filter=True,
+                # One decoder pass: the default fallback re-samples up to six times.
+                **({"temperature": 0, "condition_on_previous_text": False} if single_pass else {}),
+                **priming,
                 vad_parameters={"threshold": 0.3, "min_speech_duration_ms": 80,
                                 "speech_pad_ms": 300},
             )
@@ -457,12 +540,15 @@ class Speech:
         nothing. Local decodes go through the scheduler: finals first, one decode at a time."""
         if take.remote:
             try:
-                began = time.monotonic()
+                began = self.clock()
                 text = remote_transcribe(take.remote, audio, take.prompt, final,
                                          None if final else take.interim_abort)
                 if final:
-                    take.backend, take.decoded = "remote", time.monotonic() - began
+                    take.backend, take.decoded = "remote", self.clock() - began
                     take.audio_seconds = len(audio) / 32000
+                    matched = match_verb(text, take.verbs)
+                    if matched and isinstance(matched[0], dict):
+                        return self.final_decode(take, audio, first=text)
                 return text
             except (OSError, ValueError, RuntimeError, TimeoutError) as error:
                 log(f"remote transcription failed ({error}); "
@@ -477,28 +563,44 @@ class Speech:
             self.decoding = True
         try:
             return self.transcribe_audio(audio[-INTERIM_WINDOW_BYTES:], take.prompt, retry=False,
-                                         abort=take.interim_abort, beam_size=1,
+                                         abort=take.interim_abort, beam_size=1, single_pass=True,
                                          language=take.language)
         finally:
             with self.schedule:
                 self.decoding = False
                 self.schedule.notify_all()
 
-    def final_decode(self, take, audio):
-        asked = time.monotonic()
+    def final_decode(self, take, audio, first=None):
+        asked = self.clock()
         with self.schedule:
             self.finals_pending += 1
             while self.decoding:
                 self.schedule.wait()
             self.decoding = True
-        began = time.monotonic()
+        began = self.clock()
         stats = {}
-        take.backend, take.queued = "local", began - asked
+        take.backend = take.backend or "local"
+        take.queued = began - asked
         take.audio_seconds = len(audio) / 32000
         try:
-            return self.transcribe_audio(audio, take.prompt, language=take.language, stats=stats)
+            text = first if first is not None else self.transcribe_audio(
+                audio, take.prompt, language=take.language, stats=stats)
+            matched = match_verb(text, take.verbs)
+            if not matched or isinstance(matched[0], str) or take.cancelled.is_set():
+                return text
+            verb = matched[0]
+            take.verb_locale = verb["locale"]
+            hints = ", ".join([verb["word"], *verb.get("hints", [])])
+            try:
+                decoded = self.transcribe_audio(audio, hints, language=verb["locale"],
+                                                retry=False, hotwords=hints)
+                second = match_verb(decoded, [verb])
+                return verb["word"] + " " + second[1] if second else text
+            except Exception as error:
+                log(f"verb locale decode failed ({error}); using session transcript", level="WARN")
+                return text
         finally:
-            take.decoded, take.retried = time.monotonic() - began, bool(stats)
+            take.decoded, take.retried = self.clock() - began, bool(stats)
             with self.schedule:
                 self.decoding = False
                 self.finals_pending -= 1
@@ -531,7 +633,7 @@ class Speech:
         take = self.capture
         self.capture = self.session = None
         take.interim_abort.set()
-        take.stopped = time.monotonic()
+        take.stopped = self.clock()
         if transcribe:
             self.cancel_tail()
             self.releasing = take
@@ -543,7 +645,7 @@ class Speech:
             self.finish_take(session, take, False)
 
     def finish_take(self, session, take, transcribe):
-        released = time.monotonic()
+        released = self.clock()
         recordings = sorted(take.recordings,
                             key=lambda r: self.tails.get(r.source, self.tails["default"]))
         for recording in recordings:
@@ -551,7 +653,7 @@ class Speech:
                 continue
             tail = self.tails.get(recording.source, self.tails["default"]) / 1000
             if transcribe:
-                take.cancelled.wait(max(0, released + tail - time.monotonic()))
+                take.cancelled.wait(max(0, released + tail - self.clock()))
             if recording.process.poll() is None:
                 recording.process.send_signal(signal.SIGINT)
         for recording in take.recordings:
@@ -577,8 +679,11 @@ class Speech:
                 detail = (f"backend {take.backend}, audio {take.audio_seconds:.1f}s, "
                           f"queue wait {take.queued:.2f}s, decode {take.decoded:.2f}s, "
                           f"retry {'yes' if take.retried else 'no'}")
+                if take.verb_locale:
+                    detail += f", verb locale {take.verb_locale}, verb backend local"
             log(f"session {session}: language {take.language}, {detail}, "
-                f"stop to reply {time.monotonic() - take.stopped:.2f}s")
+                f"stop to reply {self.clock() - take.stopped:.2f}s")
+            take.completed.set()
 
         if not finished:
             answer({"error": "capture did not finish"})
@@ -629,13 +734,15 @@ def run(stream, speech, device=None):
                 log("unknown speech command ignored")
                 continue
             if (isinstance(command, dict) and "start" in command
-                    and set(command) <= {"start", "prompt", "language"}
+                    and set(command) <= {"start", "prompt", "language", "verbs"}
                     and type(command["start"]) is int and command["start"] >= 0
                     and isinstance(command.get("prompt", ""), str) and "\0" not in command.get("prompt", "")
                     and isinstance(command.get("language", DEFAULT_LANGUAGE), str)
-                    and re.fullmatch(r"[a-z]{2,8}", command.get("language", DEFAULT_LANGUAGE))):
+                    and re.fullmatch(r"[a-z]{2,8}", command.get("language", DEFAULT_LANGUAGE))
+                    and valid_verbs(command.get("verbs", []))):
                 speech.start(command["start"], " ".join(command.get("prompt", "").split()[:100]),
-                             command.get("language", DEFAULT_LANGUAGE))
+                             command.get("language", DEFAULT_LANGUAGE),
+                             **({"verbs": command["verbs"]} if "verbs" in command else {}))
             elif (set(command) == {"stop", "transcribe"}
                   and type(command["stop"]) is int and command["stop"] >= 0
                   and type(command["transcribe"]) is bool):
@@ -656,6 +763,7 @@ if __name__ == "__main__":
     device.reexec_with_cuda_libraries()
     choice = device.select(os.environ.get("TEHUTI_SPEECH_MODEL", "small"), log)
     speech = Speech(choice.model)
+    speech.warm()
     def terminate(_signal, _frame):
         raise SystemExit(0)
     signal.signal(signal.SIGTERM, terminate)

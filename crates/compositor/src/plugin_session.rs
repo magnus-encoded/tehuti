@@ -15,8 +15,8 @@ use std::{
     time::Instant,
 };
 use tehuti_protocol::{
-    Action, Call, Event, Initialize, MAX_MESSAGE_BYTES, Manifest, Message, Method, PluginKind, ResultValue,
-    RpcVersion, Subscription,
+    Action, Call, Event, Initialize, MAX_MESSAGE_BYTES, Manifest, Message, Method, ResultValue, RpcVersion,
+    Subscription,
 };
 
 pub(crate) const HANG_TIMEOUT: Duration = Duration::from_secs(2);
@@ -110,8 +110,8 @@ pub(crate) struct Session {
     pub(crate) read_window: Instant,
     pub(crate) read_bytes: usize,
     pub(crate) status_text: Option<String>,
-    /// A verb plugin's current verbs; empty for application plugins.
-    pub(crate) verbs: Vec<String>,
+    /// The plugin's current verbs; an application plugin's apply only while it is focused.
+    pub(crate) verbs: Vec<tehuti_protocol::Verb>,
     /// The hotwords the plugin last sent; a restart starts empty.
     pub(crate) hints: Vec<String>,
     /// The invoke words the plugin last sent; a restart starts empty.
@@ -213,7 +213,7 @@ impl Session {
         self.expire_initialize(now);
         let expired = self.pending.values().filter(|deadline| now >= **deadline).count();
         self.pending.retain(|_, deadline| now < *deadline);
-        self.missed_decisions = self.missed_decisions.saturating_add(usize::from(expired > 0));
+        self.missed_decisions = self.missed_decisions.saturating_add(expired);
         if self.missed_decisions >= 3 {
             self.fail("three consecutive plugin decisions missed");
         }
@@ -520,7 +520,7 @@ impl Session {
                 Vec::new()
             }
             Method::Verbs { verbs } => {
-                self.set_verbs(verbs, now);
+                self.set_verbs(verbs);
                 Vec::new()
             }
             Method::SpeechHints { hotwords } => {
@@ -546,18 +546,9 @@ impl Session {
         }
     }
 
-    /// Replaces a verb plugin's verbs; an application plugin may not declare any.
-    pub(crate) fn set_verbs(&mut self, verbs: Vec<String>, now: Instant) {
-        if self.manifest.kind == PluginKind::Verb {
-            self.verbs = verbs;
-            return;
-        }
-        let reason = "an application plugin declares no verbs";
-        self.invalid(now);
-        tracing::warn!(reason, "plugin verbs rejected");
-        if let Err(error) = self.reject(None, reason) {
-            tracing::warn!(%error, "plugin rejection dropped");
-        }
+    /// Replaces the plugin's verbs. Its kind sets their scope.
+    pub(crate) fn set_verbs(&mut self, verbs: Vec<tehuti_protocol::Verb>) {
+        self.verbs = verbs;
     }
 
     pub(crate) fn call_for_event(&mut self, event: &Event, selected: bool) -> Option<Call> {
@@ -626,7 +617,7 @@ mod tests {
             plugin_id: None,
             author: None,
             security_contact: None,
-            kind: PluginKind::Application,
+            kind: tehuti_protocol::PluginKind::Application,
             verbs: Vec::new(),
             executable: "plugin".into(),
             app_ids: vec!["test".into()],
@@ -698,6 +689,29 @@ mod tests {
                 session.supervise(now);
                 prop_assert_eq!(session.status == Status::Failed, miss == 3);
             }
+        }
+
+        #[test]
+        fn every_expired_decision_is_one_miss_however_supervision_passes_fall(
+            button in any::<bool>(), count in 1_usize..6, split in 0_usize..6,
+        ) {
+            let start = Instant::now();
+            let mut session = ready(start);
+            for _ in 0..count {
+                let _request = call(&mut session, button, start);
+            }
+            let split = split.min(count);
+            // Make `split` requests expire one pass earlier than the rest.
+            let early = session.pending.keys().copied().take(split).collect::<Vec<_>>();
+            for request_id in early {
+                if let Some(deadline) = session.pending.get_mut(&request_id) {
+                    *deadline = start;
+                }
+            }
+            session.supervise(start);
+            session.supervise(after(start, Duration::from_secs(3)));
+            prop_assert_eq!(session.missed_decisions, count);
+            prop_assert_eq!(session.status == Status::Failed, count >= 3);
         }
 
         #[test]

@@ -2,16 +2,18 @@
 
 #[cfg(test)]
 mod plugins {
+    use core::cell::Cell;
     use core::time::Duration;
     use proptest::prelude::*;
     use smithay::reexports::{calloop::EventLoop, wayland_server::Display};
+    use std::rc::Rc;
     use std::{
         io::Write,
         os::unix::fs::PermissionsExt,
         sync::{Arc, Mutex},
         time::Instant,
     };
-    use tehuti::{plugins::install, state::Compositor};
+    use tehuti::{plugins::install_with_clock, state::Compositor};
     use tehuti_protocol::{
         ButtonName, ButtonState, Event, KeyName, Manifest, Permission, StartPolicy, Subscription,
     };
@@ -20,6 +22,7 @@ mod plugins {
         event_loop: EventLoop<'static, Compositor>,
         compositor: Compositor,
         directory: tempfile::TempDir,
+        now: Rc<Cell<Instant>>,
         _display: Display<Compositor>,
     }
 
@@ -41,11 +44,26 @@ mod plugins {
             let display = Display::new().unwrap();
             let mut compositor = Compositor::new(&display.handle()).unwrap();
             let event_loop = EventLoop::try_new().unwrap();
-            compositor.set_plugins(install(&event_loop, directory.path(), |state| state).unwrap());
+            let now = Rc::new(Cell::new(Instant::now()));
+            let time = now.clone();
+            let clock: Rc<dyn Fn() -> Instant> = Rc::new(move || time.get());
+            compositor.set_clock(clock.clone());
+            compositor.set_plugins(
+                install_with_clock(&event_loop, directory.path(), |state| state, clock).unwrap(),
+            );
+            rustix::fs::mknodat(
+                rustix::fs::CWD,
+                directory.path().join("gate"),
+                rustix::fs::FileType::Fifo,
+                rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+                0,
+            )
+            .unwrap();
             Self {
                 event_loop,
                 compositor,
                 directory,
+                now,
                 _display: display,
             }
         }
@@ -57,6 +75,9 @@ mod plugins {
                     started.elapsed() < Duration::from_secs(5),
                     "plugin did not progress"
                 );
+                self.now
+                    .set(self.now.get().checked_add(Duration::from_millis(1)).unwrap());
+                self.compositor.advance_time();
                 self.event_loop
                     .dispatch(Duration::from_millis(5), &mut self.compositor)
                     .unwrap();
@@ -64,10 +85,11 @@ mod plugins {
         }
 
         fn ready(&mut self) {
-            self.compositor.handle(&Event::Focus {
-                app_id: Some("test".into()),
-                title: String::new(),
-            });
+            self.compositor
+                .controller_input(tehuti_core::controller::Input::Event(Event::Focus {
+                    app_id: Some("test".into()),
+                    title: String::new(),
+                }));
             self.pump_until(|harness| {
                 harness.compositor.initialized_plugins() == 1
                     && harness.directory.path().join("replied").exists()
@@ -76,10 +98,22 @@ mod plugins {
 
         fn send(&mut self, events: impl IntoIterator<Item = Event>) {
             for event in events {
-                self.compositor.handle(&event);
+                self.compositor
+                    .controller_input(tehuti_core::controller::Input::Event(event));
                 if self.compositor.quit_requested() {
                     break;
                 }
+            }
+        }
+
+        fn release_reply_after(&mut self, elapsed: Duration) {
+            self.pump_until(|harness| harness.directory.path().join("waiting").exists());
+            self.now.set(self.now.get().checked_add(elapsed).unwrap());
+            std::fs::write(self.directory.path().join("gate"), b"x").unwrap();
+            let started = Instant::now();
+            while !self.directory.path().join("replied").exists() {
+                assert!(started.elapsed() < Duration::from_secs(5), "plugin reply blocked");
+                std::thread::yield_now();
             }
         }
 
@@ -92,10 +126,55 @@ mod plugins {
         }
     }
 
+    #[test]
+    fn plugins_receive_only_balanced_buttons_from_the_connected_session() {
+        use tehuti_core::controller::Input;
+        let mut harness = Harness::new(&manifest(), "empty", 0, "json");
+        harness.ready();
+        let press = button(ButtonName::East);
+        let release = Event::Button {
+            name: ButtonName::East,
+            state: ButtonState::Released,
+        };
+        harness.send([release.clone(), press.clone(), press.clone()]);
+        harness.compositor.controller_input(Input::Disconnected);
+        harness.send([press.clone(), release.clone()]);
+        harness.compositor.controller_input(Input::Reconnected);
+        harness.send([release.clone(), press, release.clone(), release, focus("test")]);
+        harness.pump_until(|harness| {
+            harness
+                .received()
+                .iter()
+                .filter(|message| message["method"] == "focus")
+                .count()
+                == 2
+        });
+        let buttons: Vec<_> = harness
+            .received()
+            .into_iter()
+            .filter(|message| message["method"] == "button")
+            .map(|message| {
+                (
+                    message["params"]["name"].clone(),
+                    message["params"]["state"].clone(),
+                )
+            })
+            .collect();
+        assert_eq!(
+            buttons,
+            vec![
+                (serde_json::json!("east"), serde_json::json!("pressed")),
+                (serde_json::json!("east"), serde_json::json!("released")),
+                (serde_json::json!("east"), serde_json::json!("pressed")),
+                (serde_json::json!("east"), serde_json::json!("released")),
+            ]
+        );
+    }
+
     fn plugin_script(mode: &str, version: u64, encoding: &str) -> String {
         format!(
             r"#!/usr/bin/env python3
-import json, sys, time
+import json, sys
 held = None
 from pathlib import Path
 root = Path(__file__).parent
@@ -108,7 +187,9 @@ for line in sys.stdin:
         continue
     if message['method'] == 'initialize':
         if {mode:?} == 'slow_initialize':
-            time.sleep(2.1)
+            (root / 'waiting').write_text('yes')
+            with (root / 'gate').open('rb', buffering=0) as gate:
+                gate.read(1)
         result = {{'protocol_version': {version}, 'encoding': {encoding:?}, 'events': ['button', 'focus']}}
     elif message['method'] == 'button':
         if {mode:?} == 'out_of_order':
@@ -120,7 +201,9 @@ for line in sys.stdin:
             (root / 'replied').write_text('yes')
             continue
         if {mode:?} == 'slow':
-            time.sleep(0.4)
+            (root / 'waiting').write_text('yes')
+            with (root / 'gate').open('rb', buffering=0) as gate:
+                gate.read(1)
         result = [{{'type': 'quit'}}] if {mode:?} not in ('empty', 'duplicate') else []
     else:
         continue
@@ -156,22 +239,22 @@ for line in sys.stdin:
         ];
         let mut harness = Harness::new(&manifest, "empty", 0, "json");
         harness.ready();
-        harness.compositor.handle(&Event::Speech {
+        harness.send([Event::Speech {
             text: tehuti_protocol::Text::new("contrast".into()).unwrap(),
-        });
+        }]);
         assert_eq!(harness.compositor.adjuster().unwrap().value(), 80);
         harness.compositor.sample_sticks(tehuti_core::dispatch::Sticks {
             left: (0, -1000),
             right: (0, 0),
         });
-        harness.compositor.handle(&Event::Tick {
+        harness.send([Event::Tick {
             elapsed: Duration::from_millis(100),
-        });
+        }]);
         assert_eq!(harness.compositor.adjuster().unwrap().value(), 90);
-        harness.compositor.handle(&Event::Button {
+        harness.send([Event::Button {
             name: ButtonName::East,
             state: ButtonState::Pressed,
-        });
+        }]);
         harness.pump_until(|harness| {
             harness
                 .received()
@@ -314,22 +397,28 @@ for line in sys.stdin:
         use tehuti_core::dispatch::{Input, State, step};
         let mut state = State::new(tehuti_core::State::with_contexts(contexts));
         let mut routed = Vec::new();
+        let mut session = tehuti_core::controller::State::default();
         for event in events {
-            let mut input = Input::Event {
-                event,
-                elapsed: Duration::ZERO,
-            };
-            loop {
-                let (next, effects) = step(state, input);
-                state = next;
-                input = Input::Resume;
-                for effect in effects {
-                    if let Some(reply) = answer(effect, &mut routed) {
-                        input = reply;
+            let (after_session, admitted) =
+                tehuti_core::controller::step(session, tehuti_core::controller::Input::Event(event));
+            session = after_session;
+            for admitted_event in admitted {
+                let mut input = Input::Event {
+                    event: admitted_event,
+                    elapsed: Duration::ZERO,
+                };
+                loop {
+                    let (next, effects) = step(state, input);
+                    state = next;
+                    input = Input::Resume;
+                    for effect in effects {
+                        if let Some(reply) = answer(effect, &mut routed) {
+                            input = reply;
+                        }
                     }
-                }
-                if state.busy() == 0 {
-                    break;
+                    if state.busy() == 0 {
+                        break;
+                    }
                 }
             }
         }
@@ -359,7 +448,7 @@ for line in sys.stdin:
             let contexts: Vec<_> = configurations.iter().map(|(app_id, mappings)| context(app_id, mappings)).collect();
             let mut harness = Harness::new(&configuration, if consumes { "quit" } else { "empty" }, 0, "json");
             harness.compositor.set_contexts(contexts.clone());
-            harness.compositor.handle(&focus("test"));
+            harness.send([focus("test")]);
             if starts {
                 harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1 && harness.directory.path().join("replied").exists());
             }
@@ -402,7 +491,7 @@ for line in sys.stdin:
             harness.ready();
             std::fs::remove_file(harness.directory.path().join("replied")).unwrap();
             harness.send([event]);
-            harness.pump_until(|harness| harness.directory.path().join("replied").exists());
+            harness.release_reply_after(Duration::from_secs(1));
             for _attempt in 0..3 { harness.event_loop.dispatch(Duration::from_millis(5), &mut harness.compositor).unwrap(); }
             prop_assert!(!harness.compositor.quit_requested(), "a late Quit reply is dropped even with permission");
         }
@@ -445,14 +534,7 @@ for line in sys.stdin:
     #[test]
     fn a_late_initialize_reply_is_refused() {
         let mut harness = Harness::new(&manifest(), "slow_initialize", 0, "json");
-        harness.pump_until(|harness| {
-            harness
-                .received()
-                .iter()
-                .filter(|message| message["method"] == "initialize")
-                .count()
-                >= 2
-        });
+        harness.release_reply_after(Duration::from_millis(2100));
         for _attempt in 0..3 {
             harness
                 .event_loop
@@ -486,7 +568,7 @@ for line in sys.stdin:
         let started = Instant::now();
         while std::path::Path::new(&format!("/proc/{process}")).exists() {
             assert!(started.elapsed() < Duration::from_secs(2), "child must be reaped");
-            std::thread::sleep(Duration::from_millis(1));
+            std::thread::yield_now();
         }
         assert!(
             !std::path::Path::new(&format!("/proc/{process}")).exists(),
@@ -624,8 +706,8 @@ for line in sys.stdin:
                 let display: Display<Compositor> = Display::new().unwrap();
                 let mut compositor = Compositor::new(&display.handle()).unwrap();
                 compositor.set_contexts(vec![context.clone()]);
-                compositor.handle(&focus("test"));
-                for event in &events { compositor.handle(event); }
+                compositor.controller_input(tehuti_core::controller::Input::Event(focus("test")));
+                for event in &events { compositor.controller_input(tehuti_core::controller::Input::Event(event.clone())); }
             });
             prop_assert_eq!(with_plugin, without_plugin, "context output is the same as with no plugin installed");
         }
@@ -652,7 +734,7 @@ for line in sys.stdin:
                         serde_json::to_vec(&serde_json::json!({"code": code, "message": message})).unwrap()).unwrap();
                     for name in &names {
                         std::fs::remove_file(harness.directory.path().join("replied")).unwrap();
-                        harness.send([button(*name)]);
+                        harness.send([Event::Button { name: *name, state: ButtonState::Released }, button(*name)]);
                         harness.pump_until(|harness| harness.directory.path().join("replied").exists());
                         for _attempt in 0..3 {
                             harness.event_loop.dispatch(Duration::from_millis(5), &mut harness.compositor).unwrap();
@@ -660,7 +742,7 @@ for line in sys.stdin:
                         assert!(!harness.compositor.quit_requested(), "declines complete requests and duplicate results are ignored");
                         assert_eq!(harness.compositor.initialized_plugins(), 1, "errors keep the plugin active");
                     }
-                    assert_eq!(harness.received().iter().filter(|received| received["method"] == "button").count(), names.len());
+                    assert_eq!(harness.received().iter().filter(|received| received["method"] == "button" && received["params"]["state"] == "pressed").count(), names.len());
                 });
                 outputs.push(output);
             }
@@ -683,11 +765,11 @@ for line in sys.stdin:
         }
     }
 
-    fn launches(harness: &Harness) -> Vec<u64> {
+    fn launches(harness: &Harness) -> Vec<String> {
         std::fs::read_to_string(harness.directory.path().join("launches"))
             .unwrap_or_default()
             .lines()
-            .map(|line| line.parse().unwrap())
+            .map(str::to_owned)
             .collect()
     }
 
@@ -729,15 +811,12 @@ for line in sys.stdin:
     fn crashing_processes_restart_with_exponential_backoff_without_input() {
         let output = supervision_logs(|| {
             let mut harness = Harness::with_script(&manifest(), include_str!("fixtures/plugins/crash.py"));
+            let started = harness.now.get();
             harness.pump_until(|harness| launches(harness).len() >= 4);
-            let timestamps = launches(&harness);
-            for (pair, minimum) in timestamps.windows(2).zip([100, 200, 400]) {
-                let elapsed = Duration::from_nanos(pair[1].saturating_sub(pair[0]));
-                assert!(
-                    elapsed >= Duration::from_millis(minimum),
-                    "each restart waits for its increasing backoff"
-                );
-            }
+            assert!(
+                harness.now.get().saturating_duration_since(started) >= Duration::from_millis(700),
+                "three restarts wait through their backoff budgets"
+            );
             assert_eq!(
                 harness.compositor.initialized_plugins(),
                 0,
@@ -760,7 +839,13 @@ for line in sys.stdin:
             for count in 1..=4 {
                 harness.pump_until(|harness| launches(harness).len() >= count);
                 let started = Instant::now();
-                harness.send([button(ButtonName::East)]);
+                harness.send([
+                    Event::Button {
+                        name: ButtonName::East,
+                        state: ButtonState::Released,
+                    },
+                    button(ButtonName::East),
+                ]);
                 assert!(
                     started.elapsed() < Duration::from_millis(250),
                     "controller routing cannot wait for a plugin restart"
@@ -782,16 +867,21 @@ for line in sys.stdin:
     fn hanging_decisions_expire_and_the_process_restarts() {
         let output = text_actions(|| {
             let mut harness = Harness::with_script(&manifest(), include_str!("fixtures/plugins/hang.py"));
-            let mappings = core::iter::once((ButtonName::East, String::from("fallback"))).collect();
+            let names = [ButtonName::East, ButtonName::West, ButtonName::North];
+            let mappings = names
+                .into_iter()
+                .map(|name| (name, String::from("fallback")))
+                .collect();
             harness.compositor.set_contexts(vec![text_context(&mappings)]);
             harness.ready();
-            // Misses count per expiry instant, so each decision must expire on its own tick.
-            for _ in 0..3 {
-                harness.send([button(ButtonName::East)]);
-                std::thread::sleep(tehuti_core::plugin::BUTTON_LATENCY_BUDGET);
-                harness.compositor.handle(&Event::Tick {
+            for name in names {
+                harness.send([button(name)]);
+                harness
+                    .now
+                    .set(harness.now.get() + tehuti_core::plugin::BUTTON_LATENCY_BUDGET);
+                harness.send([Event::Tick {
                     elapsed: Duration::from_secs(3),
-                });
+                }]);
             }
             harness.pump_until(|harness| launches(harness).len() >= 2);
             harness.send([
@@ -859,6 +949,9 @@ for line in sys.stdin:
                         started.elapsed() < Duration::from_secs(2),
                         "a continuous flood is terminated rather than drained forever"
                     );
+                    harness
+                        .now
+                        .set(harness.now.get().checked_add(Duration::from_millis(100)).unwrap());
                     let dispatched = Instant::now();
                     harness
                         .event_loop
@@ -980,7 +1073,7 @@ for line in sys.stdin:
     fn verb_harness(verbs: &[&str], accept: bool) -> Harness {
         let mut configuration = manifest();
         configuration.kind = tehuti_protocol::PluginKind::Verb;
-        configuration.verbs = verbs.iter().map(|verb| (*verb).to_owned()).collect();
+        configuration.verbs = verbs.iter().map(|verb| (*verb).into()).collect();
         configuration.app_ids.clear();
         configuration.events = vec![Subscription::Speech];
         configuration.permissions = vec![Permission::Text];

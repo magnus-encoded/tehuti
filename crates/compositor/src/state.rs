@@ -107,6 +107,15 @@ const XKB_KEYCODE_OFFSET: u32 = 8;
 /// How long the warning about display holders shows before the session leaves.
 const HANDOFF_WARNING_HOLD: core::time::Duration = core::time::Duration::from_secs(2);
 
+/// An injected monotonic clock.
+struct InjectedClock(std::rc::Rc<dyn Fn() -> Instant>);
+
+impl core::fmt::Debug for InjectedClock {
+    fn fmt(&self, formatter: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        formatter.write_str("InjectedClock")
+    }
+}
+
 #[derive(Debug)]
 pub struct Compositor {
     pub start_time: Instant,
@@ -134,6 +143,7 @@ pub struct Compositor {
     remote_host_listing: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
+    injected_clock: Option<InjectedClock>,
     driver_clock: crate::driver::Clock,
     driver_elapsed: core::time::Duration,
     dim_elapsed: core::time::Duration,
@@ -142,6 +152,7 @@ pub struct Compositor {
     popups: smithay::desktop::PopupManager,
     plugins: Option<crate::plugins::Plugins>,
     quit_requested: bool,
+    placements: Option<crate::session_restore::Placements<WlSurface>>,
     session_exit_status: Option<u8>,
     restart_requested: bool,
     speech_process: Option<crate::speech::SpeechProcess>,
@@ -155,6 +166,7 @@ pub struct Compositor {
     /// Each installed context with its file, so a broken edit keeps the last good version.
     context_files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>,
     speech_context: Option<String>,
+    speech_resolver: Option<crate::speech::resolver_worker::Link>,
     speech_title: String,
     warned_hotwords: crate::speech_vocabulary::OverCapWarned,
     launch_socket: Option<std::ffi::OsString>,
@@ -301,6 +313,7 @@ impl Compositor {
             volume: None,
             remote_host_listing: None,
             microphone_listing: None,
+            injected_clock: None,
             driver_clock: crate::driver::Clock::Live,
             driver_elapsed: core::time::Duration::ZERO,
             previous_tick: Instant::now(),
@@ -310,6 +323,7 @@ impl Compositor {
             popups: smithay::desktop::PopupManager::default(),
             plugins: None,
             quit_requested: false,
+            placements: None,
             session_exit_status: None,
             restart_requested: false,
             speech_process: None,
@@ -326,6 +340,7 @@ impl Compositor {
             placement: crate::window_placement::Placement::new(),
             launch_socket: None,
             speech_context: None,
+            speech_resolver: None,
             speech_title: String::new(),
             warned_hotwords: crate::speech_vocabulary::OverCapWarned::default(),
             surfaces: CompositorState::new_v6::<Self>(display),
@@ -386,6 +401,9 @@ impl Compositor {
     }
 
     fn clock_now(&self) -> Instant {
+        if let Some(InjectedClock(clock)) = &self.injected_clock {
+            return clock();
+        }
         if matches!(self.driver_clock, crate::driver::Clock::Live) {
             Instant::now()
         } else {
@@ -407,7 +425,8 @@ impl Compositor {
         };
     }
 
-    pub(crate) const fn use_driver_clock(&mut self) {
+    /// Stops reading the wall clock: time then advances only through `Event::Tick`.
+    pub const fn use_driver_clock(&mut self) {
         self.driver_clock = crate::driver::Clock::Manual;
     }
 
@@ -848,6 +867,158 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Speech(input));
     }
 
+    /// Installs the speech resolver; unmatched transcripts then wait for its answer.
+    pub fn set_speech_resolver(&mut self, link: crate::speech::resolver_worker::Link) {
+        self.speech_resolver = Some(link);
+    }
+
+    /// Whether an utterance is waiting for the resolver's answer.
+    #[must_use]
+    pub fn speech_resolver_waiting(&self) -> bool {
+        self.speech_resolver
+            .as_ref()
+            .is_some_and(|link| link.pending.is_waiting())
+    }
+
+    /// Holds a transcript that matches nothing while the model answers off the loop.
+    /// Returns whether it was held.
+    fn hold_for_resolver(&mut self, event: &Event) -> bool {
+        use crate::speech::resolver_worker::{Job, Waiting};
+        let Event::Speech { text } = event else {
+            return false;
+        };
+        if self.dispatch.keyboard().is_open() || self.dispatch.keyboard().password_field_active() {
+            return false;
+        }
+        let Some(commands) = self.dispatch.unmatched_speech_commands(text.as_str()) else {
+            return false;
+        };
+        let target = self.speech_context.clone();
+        let Some(link) = self.speech_resolver.as_mut() else {
+            return false;
+        };
+        if link.rerouting || !link.opt_in.enabled() {
+            return false;
+        }
+        let transcript = text.as_str().to_owned();
+        let (number, superseded) = link.pending.begin(Waiting {
+            transcript: transcript.clone(),
+            target,
+            commands: commands.clone(),
+        });
+        let queued = link.worker.submit(Job {
+            number,
+            transcript,
+            commands,
+        });
+        if let Some(older) = superseded {
+            self.settle_turn(&older, None, tehuti_core::speech::resolver::Resolution::Dictate);
+        }
+        if !queued {
+            tracing::warn!("speech resolver stopped; dictating as before");
+            let held = self.speech_resolver_abandon();
+            self.speech_resolver = None;
+            if let Some(held) = held {
+                self.settle_turn(&held, None, tehuti_core::speech::resolver::Resolution::Dictate);
+            }
+        }
+        true
+    }
+
+    const fn set_rerouting(&mut self, rerouting: bool) {
+        if let Some(link) = self.speech_resolver.as_mut() {
+            link.rerouting = rerouting;
+        }
+    }
+
+    /// Dictates the held utterance when the resolver has not answered within `limit`.
+    pub fn abandon_stale_resolver(&mut self, now: std::time::Instant, limit: core::time::Duration) {
+        let stale = self
+            .speech_resolver
+            .as_mut()
+            .and_then(|link| link.pending.stale(now, limit));
+        if let Some(held) = stale {
+            tracing::warn!("speech resolver gave no answer in time; dictating as before");
+            self.settle_turn(&held, None, tehuti_core::speech::resolver::Resolution::Dictate);
+        }
+    }
+
+    /// Dictates the held utterance now, before a later event is routed behind it.
+    fn flush_held_utterance(&mut self) {
+        let held = self
+            .speech_resolver
+            .as_mut()
+            .filter(|link| !link.rerouting)
+            .and_then(|link| link.pending.abandon());
+        if let Some(held) = held {
+            self.settle_turn(&held, None, tehuti_core::speech::resolver::Resolution::Dictate);
+        }
+    }
+
+    fn speech_resolver_abandon(&mut self) -> Option<crate::speech::resolver_worker::Waiting> {
+        self.speech_resolver
+            .as_mut()
+            .and_then(|link| link.pending.abandon())
+    }
+
+    /// Takes the resolver's reply back on the loop. A reply for an utterance that a
+    /// newer one superseded is dropped.
+    pub fn resolver_replied(&mut self, reply: &crate::speech::resolver_worker::Reply) {
+        use tehuti_core::speech::resolver::{Bands, resolve};
+        let Some(waiting) = self
+            .speech_resolver
+            .as_mut()
+            .and_then(|link| link.pending.finish(reply.number))
+        else {
+            tracing::debug!(number = reply.number, "late speech resolver reply dropped");
+            return;
+        };
+        let resolution = resolve(
+            &waiting.transcript,
+            &waiting.commands,
+            reply.answer.as_ref(),
+            Bands::default(),
+        );
+        self.settle_turn(&waiting, reply.answer.as_ref(), resolution);
+    }
+
+    /// Logs the turn and routes what it became: a chosen command runs as if spoken;
+    /// anything else is routed as the original transcript.
+    fn settle_turn(
+        &mut self,
+        waiting: &crate::speech::resolver_worker::Waiting,
+        answer: Option<&tehuti_core::speech::resolver::Answer>,
+        resolution: tehuti_core::speech::resolver::Resolution,
+    ) {
+        use tehuti_core::speech::resolver::{Resolution, Turn};
+        if let Some(log) = self.speech_resolver.as_ref().and_then(|link| link.log.as_ref())
+            && let Err(error) = log.append(&Turn::new(&waiting.transcript, answer, &resolution), false)
+        {
+            tracing::warn!(%error, "speech turn log not written");
+        }
+        if self.speech_context != waiting.target {
+            tracing::warn!("focus moved while speech was held; the utterance is discarded");
+            return;
+        }
+        let spoken = match resolution {
+            Resolution::Run(command) => command,
+            Resolution::Offer(_) | Resolution::Dictate => waiting.transcript.clone(),
+        };
+        if let Ok(text) = tehuti_protocol::Text::new(spoken) {
+            self.set_rerouting(true);
+            self.handle(&Event::Speech { text });
+            self.set_rerouting(false);
+        }
+    }
+
+    /// The focused window retitled: a held utterance dictates first, still to this application.
+    pub fn focused_title_changed(&mut self, app_id: Option<String>, title: String) {
+        self.flush_held_utterance();
+        self.speech_title.clone_from(&title);
+        let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
+        self.refresh_speech_vocabulary();
+    }
+
     /// Routes a typed phrase through the same event path as an admitted transcript.
     pub fn say(&mut self, text: tehuti_protocol::Text) {
         tracing::info!(bytes = text.as_str().len(), "speech transcript received");
@@ -879,7 +1050,16 @@ impl Compositor {
     /// Whether Tehuti holds `button` from the virtual pad; reads only, so a new mirror can ask.
     #[must_use]
     pub fn virtual_pad_consumed(&self, button: tehuti_protocol::ButtonName) -> bool {
-        (button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded())
+        let core = self.dispatch.core();
+        (button == tehuti_protocol::ButtonName::Guide
+            && core
+                .pad_button_owner(
+                    &self.virtual_pad_buttons,
+                    false,
+                    button,
+                    tehuti_core::ownership::Phase::Pressed,
+                )
+                .hides_from_pad(core.guide_forwarded()))
             || self.chord_buttons.contains(&button)
             || self.virtual_pad_talk.contains(&button)
             || self
@@ -894,56 +1074,57 @@ impl Compositor {
         button: tehuti_protocol::ButtonName,
         state: tehuti_protocol::ButtonState,
     ) -> bool {
-        let push_to_talk = self.dispatch.core().talk_buttons().0;
+        use tehuti_core::ownership::{Owner, Phase, Why};
+        let push_to_talk = self.dispatch.core().talk_buttons().0.to_vec();
         let mut talk = self.virtual_pad_talk.contains(&button);
-        match state {
+        let chorded = self.chord_buttons.contains(&button);
+        let owner = match state {
             tehuti_protocol::ButtonState::Pressed => {
                 if !self.virtual_pad_buttons.contains(&button) {
                     self.virtual_pad_buttons.push(button);
                 }
-                if !push_to_talk.is_empty()
-                    && push_to_talk.contains(&button)
-                    && push_to_talk
-                        .iter()
-                        .all(|member| self.virtual_pad_buttons.contains(member))
-                {
-                    for member in push_to_talk {
-                        if !self.virtual_pad_talk.contains(member) {
-                            self.virtual_pad_talk.push(*member);
-                        }
-                    }
-                    talk = true;
-                }
+                Some(self.dispatch.core().pad_button_owner(
+                    &self.virtual_pad_buttons,
+                    chorded,
+                    button,
+                    Phase::Pressed,
+                ))
             }
             tehuti_protocol::ButtonState::Released => {
                 self.virtual_pad_buttons.retain(|held| *held != button);
                 self.virtual_pad_talk.retain(|held| *held != button);
+                None
             }
+        };
+        // Talk loses to a higher layer, including Guide and the system menu.
+        if let Some(Owner::Talk(_)) = owner {
+            for member in &push_to_talk {
+                if !self.virtual_pad_talk.contains(member) {
+                    self.virtual_pad_talk.push(*member);
+                }
+            }
+            talk = true;
         }
         let plugin = self
             .plugins
             .as_mut()
-            .is_some_and(|plugins| plugins.pad_button(button, state, push_to_talk));
+            .is_some_and(|plugins| plugins.pad_button(button, state, &push_to_talk));
         // Guide reaches the application only at the app level and only when the context forwards it.
-        let local_guide =
-            button == tehuti_protocol::ButtonName::Guide && !self.dispatch.core().guide_forwarded();
+        let guide_forwarded = self.dispatch.core().guide_forwarded();
+        let local_guide = button == tehuti_protocol::ButtonName::Guide && !guide_forwarded;
         // Start pressed while Guide is held belongs to the escape chord in every mode, and so does its release.
-        // Guide is read from this hook's own held list: a batch of raw events reaches here before the core sees any.
-        let chord_start = if button != tehuti_protocol::ButtonName::Start {
-            false
-        } else if state == tehuti_protocol::ButtonState::Pressed {
-            if self
-                .virtual_pad_buttons
-                .contains(&tehuti_protocol::ButtonName::Guide)
-                && !self.chord_buttons.contains(&button)
-            {
-                self.chord_buttons.push(button);
+        let chord_start = match owner {
+            Some(Owner::Tehuti(Why::ChordStart)) => {
+                if !chorded {
+                    self.chord_buttons.push(button);
+                }
+                true
             }
-            self.chord_buttons.contains(&button)
-        } else {
-            let chorded = self.chord_buttons.contains(&button);
-            self.chord_buttons.retain(|held| *held != button);
-            chorded
+            Some(_) => chorded,
+            None => {
+                self.chord_buttons.retain(|held| *held != button);
+                chorded
+            }
         };
         talk || plugin || local_guide || chord_start
     }
@@ -971,6 +1152,11 @@ impl Compositor {
         let _rejection = self.dispatch(DispatchInput::Tick { elapsed });
         self.release_due_keys();
         self.keep_invitation();
+        if let Some(placements) = self.placements.as_mut() {
+            self.placement.guard_restored_focus(placements);
+            self.restore_prior_focus();
+            self.place_layout();
+        }
         self.poll_recording();
         self.release_ready_buffers();
         if let Some((status, due)) = self.exit_hold
@@ -1322,13 +1508,20 @@ impl Compositor {
         self.pointer.clone().frame(self);
     }
 
+    /// Uses an injected monotonic clock for event timing.
+    pub fn set_clock(&mut self, clock: std::rc::Rc<dyn Fn() -> Instant>) {
+        self.previous_tick = clock();
+        self.start_time = self.previous_tick;
+        self.injected_clock = Some(InjectedClock(clock));
+    }
+
     /// Reads the clock once and returns the time since the previous read.
     fn read_clock(&mut self) -> core::time::Duration {
         if !matches!(self.driver_clock, crate::driver::Clock::Live) {
             return core::time::Duration::ZERO;
         }
-        let now = Instant::now();
-        let elapsed = now.duration_since(self.previous_tick);
+        let now = self.clock_now();
+        let elapsed = now.saturating_duration_since(self.previous_tick);
         self.previous_tick = now;
         elapsed
     }
@@ -1410,6 +1603,9 @@ impl Compositor {
             self.save_destination(name.trim().trim_end_matches(['.', '!', '?']));
             return;
         }
+        if self.hold_for_resolver(event) {
+            return;
+        }
         let since_tick = if matches!(event, Event::Focus { .. }) {
             core::time::Duration::ZERO
         } else {
@@ -1473,6 +1669,13 @@ impl Compositor {
 
     /// Feeds one input and every reply it asks for until its frame finishes.
     pub(crate) fn dispatch(&mut self, input: DispatchInput) -> Option<tehuti_core::plugin::Rejection> {
+        // A held utterance dictates before any input but time, sticks and the sidecar's own feed.
+        if !matches!(
+            input,
+            DispatchInput::Tick { .. } | DispatchInput::Sticks(_) | DispatchInput::Speech(_)
+        ) {
+            self.flush_held_utterance();
+        }
         // Loop ticks are not timeline events; sticks are sampled once per video frame.
         if let DispatchInput::Sticks(sticks) = &input {
             let now = [sticks.left.0, sticks.left.1, sticks.right.0, sticks.right.1];
@@ -1670,6 +1873,9 @@ impl Compositor {
         match command {
             tehuti_core::speech::SpeechEffect::Start { session } => {
                 tracing::info!(session, "speech session started");
+                if let Some(plugins) = self.plugins.as_mut() {
+                    plugins.begin_utterance();
+                }
             }
             tehuti_core::speech::SpeechEffect::Stop { session, transcribe } => {
                 tracing::info!(session, transcribe, "speech session stopped");
@@ -1688,9 +1894,13 @@ impl Compositor {
             self.speech_context.as_deref(),
             &self.speech_title,
         );
+        let verbs = self
+            .plugins
+            .as_ref()
+            .map_or_else(Vec::new, crate::plugins::Plugins::speech_verbs);
         self.speech_process.as_mut().is_none_or(|process| {
             process
-                .send_with_language(command, &prompt, language.as_deref())
+                .send_with_verbs(command, &prompt, language.as_deref(), &verbs)
                 .inspect_err(|error| tracing::warn!(%error, "speech command failed"))
                 .is_ok()
         })
@@ -2606,9 +2816,8 @@ impl Compositor {
 
     /// Records that a damaged frame containing the confirmation was submitted.
     pub fn note_secret_confirmation_frame_submitted(&mut self) {
-        if self.secret_confirmation_text().is_some() {
-            self.confirmation.frame_submitted();
-        }
+        self.confirmation
+            .frame_submitted(self.live_secret_focus().as_ref(), self.clock_elapsed());
     }
 
     fn handle_secret_confirmation_button(&mut self, state: tehuti_protocol::ButtonState) -> bool {
@@ -3771,6 +3980,49 @@ impl Compositor {
         }
     }
 
+    /// Launches every saved application and remembers where each window goes; the windows
+    /// are placed as they open, whatever their order; the window that had focus gets it back
+    /// once the last launch has opened.
+    pub fn begin_session_restore(&mut self, saved: &crate::session_restore::Saved) {
+        let installed = self.launcher.installed();
+        let now = self.clock_now();
+        let socket = self.launch_socket.clone();
+        let launcher = &mut self.launcher;
+        let focus_at_start = self.placement.focused();
+        let placements =
+            crate::session_restore::Placements::begin(saved, now, focus_at_start, |token, window| {
+                if !installed.contains(&window.app_id) {
+                    tracing::warn!(app_id = %window.app_id, "restore skipped: no desktop entry");
+                    return false;
+                }
+                let started = launcher.launch_with_token(&window.app_id, socket.as_deref(), Some(token));
+                if !started {
+                    tracing::warn!(app_id = %window.app_id, "restore launch failed");
+                }
+                started
+            });
+        self.placements = Some(placements);
+    }
+
+    /// The restorable windows now open, for the clean-exit save.
+    #[must_use]
+    pub fn session_to_save(&self) -> crate::session_restore::Saved {
+        let apps: std::collections::HashMap<_, _> = self
+            .placement
+            .placed(|_| 0.0)
+            .into_iter()
+            .filter_map(|placed| {
+                let app_id = placed.window.toplevel().and_then(toplevel_app_id)?;
+                Some((placed.identity, app_id))
+            })
+            .collect();
+        crate::session_restore::Saved::capture(
+            &self.placement.snapshot(),
+            |window| apps.get(&window.0).cloned(),
+            &self.launcher.installed(),
+        )
+    }
+
     pub fn set_launch_socket(&mut self, socket: std::ffi::OsString) {
         self.launch_socket = Some(socket);
     }
@@ -4199,12 +4451,41 @@ impl Compositor {
         let context = context.cloned();
         let width = context.as_ref().and_then(|context| self.opening_width(context));
         let context = context.as_ref();
-        let rules = Self::window_rules(&surface, context, width);
+        let mut rules = Self::window_rules(&surface, context, width);
         let key = surface.wl_surface().clone();
+        if let Some(placements) = self.placements.as_mut() {
+            self.placement.guard_restored_focus(placements);
+        }
+        let claim = self.claim_restored_place(&surface);
+        rules.open_at = claim.map(|claim| self.placement.open_at(claim));
         let window = LayoutWindow::new(Window::new_wayland_window(surface));
         match self.placement.map(key, window, rules) {
-            Ok(()) => self.place_layout(),
+            Ok(()) => {
+                self.restore_prior_focus();
+                self.place_layout();
+            }
             Err(error) => tracing::warn!(%error, "window layout failed"),
+        }
+    }
+
+    /// Focuses the window that had focus before the exit, once the restore has settled.
+    fn restore_prior_focus(&mut self) {
+        let now = self.clock_now();
+        if let Some(placements) = self.placements.as_mut() {
+            if let Some(report) = self.placement.finish_restored_focus(placements, now) {
+                if report.failed.is_empty() {
+                    tracing::info!(restored = report.restored, "session restored");
+                } else {
+                    tracing::warn!(
+                        restored = report.restored,
+                        failed = ?report.failed,
+                        "session partially restored"
+                    );
+                }
+            }
+            if placements.is_empty() {
+                self.placements = None;
+            }
         }
     }
 
@@ -4246,6 +4527,20 @@ impl Compositor {
             tracing::warn!(%error, path = %path.display(), "window width not rewritten");
         }
         Some(tehuti_protocol::fraction_value(fraction))
+    }
+
+    fn claim_restored_place(
+        &mut self,
+        surface: &ToplevelSurface,
+    ) -> Option<crate::session_restore::Claim<WlSurface>> {
+        let now = self.clock_now();
+        let placements = self.placements.as_mut()?;
+        let token = crate::window_context::restore_token(surface.wl_surface(), &self.display);
+        let place = placements.claim(token, now, surface.wl_surface());
+        if placements.is_empty() {
+            self.placements = None;
+        }
+        place
     }
 
     fn window_rules(
@@ -4307,9 +4602,7 @@ impl XdgShellHandler for Compositor {
         }
         self.sync_destination_windows();
         if let Some(Event::Focus { app_id, title }) = self.focus_event(&surface) {
-            self.speech_title.clone_from(&title);
-            let _rejection = self.dispatch(DispatchInput::FocusTitle { app_id, title });
-            self.refresh_speech_vocabulary();
+            self.focused_title_changed(app_id, title);
         }
     }
 

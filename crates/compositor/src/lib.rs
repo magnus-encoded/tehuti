@@ -49,6 +49,7 @@ pub mod import_placeholder;
 mod layout_window;
 mod window_placement;
 
+pub mod session_restore;
 pub mod shutdown;
 
 pub mod rendering;
