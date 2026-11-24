@@ -1099,7 +1099,7 @@ for line in sys.stdin:
                 .lines()
                 .count()
         };
-        let expected = processed() + 1;
+        let expected = processed().saturating_add(1);
         harness.send([speech(&format!("worker {command}"))]);
         harness.pump_until(|harness| {
             std::fs::read_to_string(harness.directory.path().join("processed"))
