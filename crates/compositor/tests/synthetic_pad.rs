@@ -1486,14 +1486,7 @@ mod synthetic_pad {
             application.mirror_button(&mut compositor, &mut pad, key, value);
         }
         if menu_open {
-            synthetic.push(Event::Button {
-                name: ButtonName::Guide,
-                state: ButtonState::Pressed,
-            });
-            synthetic.push(Event::Tick {
-                elapsed: Duration::from_millis(500),
-            });
-            route(&mut compositor, &mut synthetic).unwrap();
+            open_mirrored_pad_menu(&mut compositor, &mut synthetic);
         }
         for value in [1, 0] {
             application.mirror_button(&mut compositor, &mut pad, KeyCode::KEY_RECORD, value);
@@ -1509,6 +1502,27 @@ mod synthetic_pad {
             application.keys(),
             expected,
             "guide={guide}, menu_open={menu_open}"
+        );
+    }
+
+    fn open_mirrored_pad_menu(compositor: &mut Compositor, synthetic: &mut SyntheticPad) {
+        synthetic.push(Event::Button {
+            name: ButtonName::Guide,
+            state: ButtonState::Pressed,
+        });
+        synthetic.push(Event::Tick {
+            elapsed: Duration::from_millis(500),
+        });
+        synthetic.push(Event::Button {
+            name: ButtonName::Guide,
+            state: ButtonState::Released,
+        });
+        route(compositor, synthetic).unwrap();
+        assert!(
+            compositor
+                .visible_notice_text()
+                .is_some_and(|text| text.contains("SYSTEM MENU")),
+            "Guide hold must open the menu before testing Record"
         );
     }
 
