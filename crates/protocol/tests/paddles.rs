@@ -12,7 +12,7 @@ mod paddles {
             ))
             .unwrap();
             assert_eq!(
-                format!("{:?}", talk.passthrough_push_to_talk()),
+                format!("{:?}", talk.own_push_to_talk().unwrap()),
                 format!("[Paddle{num}]")
             );
         }

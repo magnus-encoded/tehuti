@@ -18,12 +18,14 @@ serde_json = "1"
 serde = { version = "1", features = ["derive"] }
 toml = "1.1"
 toml_edit = "0.25"
-rustix = { version = "1", features = ["fs", "process", "event"] }
+rustix = { version = "1", features = ["fs", "process", "event", "pipe"] }
 libc = "0.2"
 evdev = { git = "https://github.com/emberian/evdev", rev = "7fee138a341f73b81b9c4f8c59e3527c6a169ea3" }
 smithay = { version = "0.7", default-features = false, features = ["backend_winit", "backend_libinput", "backend_drm", "backend_gbm", "renderer_multi", "use_system_lib", "backend_udev", "backend_session_libseat", "renderer_pixman", "wayland_frontend", "desktop", "renderer_gl"] }
 tehuti-core = { path = "../core" }
 tehuti-protocol = { path = "../protocol" }
+zbus = { version = "5", default-features = false, features = ["async-io", "blocking-api"] }
+zeroize = "1"
 thiserror = "2.0.21"
 tracing = "0.1.44"
 tracing-subscriber = { version = "0.3.23", features = ["env-filter"] }
@@ -37,6 +39,7 @@ tempfile = "3"
 proptest = "1"
 tehuti-protocol = { path = "../protocol", features = ["arbitrary"] }
 wayland-client = "0.31"
+zbus = { version = "5", features = ["p2p"] }
 wayland-protocols = { version = "0.32", features = ["client", "unstable", "staging"] }
 
 [build-dependencies]

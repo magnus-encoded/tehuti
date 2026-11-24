@@ -32,7 +32,7 @@ mod context_push_to_talk {
         assert!(state.push_to_talk(ButtonName::Select));
         assert!(state.push_to_talk(ButtonName::LeftBumper));
         assert_eq!(
-            state.passthrough_push_to_talk(),
+            state.talk_buttons().0,
             [ButtonName::Select, ButtonName::LeftBumper]
         );
     }

@@ -4,6 +4,7 @@
     reason = "Smithay and winit pull in duplicate transitive versions outside our control"
 )]
 
+pub mod buffer_gate;
 pub mod cli;
 pub mod config_check;
 pub mod controller;
@@ -19,6 +20,7 @@ pub mod width_rewrite;
 
 pub(crate) mod text_input;
 
+pub(crate) mod plugin_session;
 pub mod plugins;
 
 pub mod say;
@@ -28,6 +30,7 @@ pub mod notice;
 
 pub mod secret_confirmation;
 pub mod secret_delivery;
+pub mod secret_service;
 
 pub mod client_env;
 pub mod desktop;
@@ -46,6 +49,7 @@ pub mod import_placeholder;
 mod layout_window;
 mod window_placement;
 
+pub mod session_restore;
 pub mod shutdown;
 
 pub mod rendering;

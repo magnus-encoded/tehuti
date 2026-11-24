@@ -1810,11 +1810,11 @@ mod synthetic_pad {
                 if requests > 0 {
                     let pid = std::fs::read_to_string(directory.path().join("pid")).unwrap();
                     crate::harness::pump_for(&mut event_loop, &mut compositor, tehuti_core::plugin::BUTTON_BUDGET.saturating_add(Duration::from_millis(10)), |_| {});
-                    model.misses[0] = model.misses[0].saturating_add(1);
+                    model.misses[0] = model.misses[0].saturating_add(requests);
                     compositor.handle(&Event::Tick { elapsed: tehuti_core::plugin::BUTTON_BUDGET.saturating_add(Duration::from_millis(10)) });
                     prop_assert_eq!(compositor.pending_plugin_decisions(), 0, "every decision settles");
-                    if model.misses[0] == 3 {
-                        prop_assert_eq!(compositor.initialized_plugins(), 0, "three expiry batches stop the plugin");
+                    if model.misses[0] >= 3 {
+                        prop_assert_eq!(compositor.initialized_plugins(), 0, "three missed decisions stop the plugin");
                         crate::harness::pump_for(&mut event_loop, &mut compositor, model.backoff.saturating_sub(Duration::from_millis(20)), |compositor| {
                             assert_eq!(compositor.initialized_plugins(), 0, "restart waits for backoff");
                         });
@@ -1823,7 +1823,7 @@ mod synthetic_pad {
                         model.misses[0] = 0;
                         model.backoff = model.backoff.saturating_mul(2).min(Duration::from_secs(30));
                     } else {
-                        prop_assert_eq!(compositor.initialized_plugins(), 1, "fewer than three expiry batches keep the plugin alive");
+                        prop_assert_eq!(compositor.initialized_plugins(), 1, "fewer than three missed decisions keep the plugin alive");
                         prop_assert_eq!(std::fs::read_to_string(directory.path().join("pid")).unwrap(), pid);
                     }
                 }
@@ -4102,6 +4102,18 @@ for line in sys.stdin:
         ) -> Result<tehuti_core::secret::SecretValue, tehuti_core::secret::SecretProviderUnavailable>
         {
             Ok(tehuti_core::secret::SecretValue::new("s3ntinel".into()))
+        }
+
+        fn list_labels(&mut self) -> Result<Vec<String>, tehuti_core::secret::SecretProviderUnavailable> {
+            Err(tehuti_core::secret::SecretProviderUnavailable)
+        }
+
+        fn unlock(&mut self) -> Result<(), tehuti_core::secret::SecretProviderUnavailable> {
+            Err(tehuti_core::secret::SecretProviderUnavailable)
+        }
+
+        fn lock(&mut self) -> Result<(), tehuti_core::secret::SecretProviderUnavailable> {
+            Err(tehuti_core::secret::SecretProviderUnavailable)
         }
     }
 

@@ -30,7 +30,7 @@ One concrete desired change per issue: the observable behaviour after the change
 
 ## Pull requests
 
-`Closes #N`, then one to three sentences on how the change answers that issue. CI caps the body at 120 words.
+`Closes #N`, then one to three sentences on how the change answers that issue. CI caps the body at 120 words; run `scripts/pr-body <body-file>` (and `scripts/prose-lint <body-file>`) before opening or editing a PR.
 
 Every ADR change needs owner signoff. The owner applies the `adr-accepted` label to the PR after deciding; CI checks the label and verifies the owner applied it. ADR-only PRs may omit an issue reference when this signoff is present. PRs that also change other files still need an issue reference.
 
@@ -53,7 +53,7 @@ A test states a rule about behaviour. It never computes its expected value by co
 - Tests go through public seams. They never reach into private state, mock internal modules or assert on call order between internal functions.
 - Every documented promise has an automated test, except where a spec or ADR says it is checked by hand.
 - No test needs a real device, uinput, display or microphone. Core tests drive the pure step with generated events; compositor tests use the synthetic pad.
-- CI checks that a PR's new or edited tests fail without its source change: `scripts/check-red-test` restores the base version of the changed `crates/*/src` files (keeping the PR's inline test modules) and runs those tests; at least one must fail. A base that does not build is inconclusive and fails the job unless the PR has the `red-test-build-ok` label and the body gives the reason. A fix only in a newly added source file also fails the job. Label a PR `no-red-test` to skip the job (docs, refactors).
+- CI checks that a PR's new or edited tests fail without its source change: `scripts/check-red-test` restores the base version of the changed `crates/*/src` files (keeping the PR's inline test modules) and runs those tests; at least one must fail. A base that does not build counts as red when every compiler error (read from cargo's JSON diagnostics) is a missing-item code such as E0432, E0433, E0425, E0599, E0609, E0412 or E0061 and points into a test file or inline test module the PR changed; any other build error is inconclusive and fails the job unless the PR has the `red-test-build-ok` label (the manual override) and the body gives the reason. A fix only in a newly added source file also fails the job. Label a PR `no-red-test` to skip the job (docs, refactors).
 - Mutation testing measures this: a surviving mutant is a missing test.
 
 ## Separable concerns
@@ -68,3 +68,7 @@ Tehuti is built so that a part can be swapped out: another window manager or com
 ## UI and settings
 
 - Settings pages are realtime: a page draws at once from state Tehuti already holds. Anything from an outside source (network peers, PipeWire, AudioRelay, Tailscale, slow device probes) arrives later as an added tile at the end of its row, never as a wait, a spinner or a moved focus.
+
+## Review findings
+
+- A finding about a leak, a stale entry or an invalid state must name the structure that makes it unrepresentable: an owner with the same lifetime, a weak back-reference, or a type that cannot hold the bad combination. Pruning or cleanup code is the fallback only.

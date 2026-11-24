@@ -192,12 +192,20 @@ impl State {
             .with_hidden(self.menu_hidden.clone())
     }
 
+    /// The push-to-talk buttons and where they come from: the controller's binding, then the
+    /// focused context's own list, then the global list, then Record. One lookup for every mode.
     #[must_use]
-    pub fn passthrough_push_to_talk(&self) -> &[ButtonName] {
+    pub fn talk_buttons(&self) -> (&[ButtonName], ownership::TalkSource) {
+        use ownership::TalkSource;
         if let Some(button) = &self.controller_talk {
-            return core::slice::from_ref(button);
+            return (core::slice::from_ref(button), TalkSource::Controller);
         }
-        focused_context(self).map_or(&[ButtonName::Record], Context::passthrough_push_to_talk)
+        if let Some(own) = focused_context(self).and_then(Context::own_push_to_talk) {
+            return (own, TalkSource::Context);
+        }
+        global_context(self).map_or((&[ButtonName::Record][..], TalkSource::Default), |context| {
+            (context.push_to_talk_buttons(), TalkSource::Global)
+        })
     }
 
     #[must_use]
@@ -603,15 +611,7 @@ impl State {
 
     #[must_use]
     pub fn push_to_talk(&self, button: ButtonName) -> bool {
-        if let Some(binding) = self.controller_talk {
-            return binding == button;
-        }
-        if let Some(own) = focused_context(self).and_then(Context::own_push_to_talk) {
-            return own.contains(&button);
-        }
-        global_context(self).map_or(button == ButtonName::Record, |context| {
-            context.push_to_talk(button)
-        })
+        self.talk_buttons().0.contains(&button)
     }
 
     /// Whether Guide is down, so Start belongs to the escape chord.
@@ -1226,6 +1226,9 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
 
 pub mod invoke;
 pub mod secret;
+pub mod secret_flow;
+pub mod secret_search;
+pub mod secret_test_store;
 pub mod shadowing;
 pub mod speech;
 pub mod tool_words;
