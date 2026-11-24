@@ -1243,6 +1243,34 @@ mod synthetic_pad {
         }
     }
 
+    fn mirror_guide_start_chord(
+        application: &ApplicationPad,
+        compositor: &mut Compositor,
+        pad: &mut tehuti::controller::EvdevPad<ApplicationPad>,
+    ) {
+        use evdev::KeyCode;
+
+        for (key, value) in [
+            (KeyCode::BTN_MODE, 1),
+            (KeyCode::BTN_START, 1),
+            (KeyCode::BTN_MODE, 0),
+            (KeyCode::BTN_START, 0),
+        ] {
+            application.mirror_button(compositor, pad, key, value);
+        }
+    }
+
+    fn open_menu_with_synthetic_guide_hold(compositor: &mut Compositor, synthetic: &mut SyntheticPad) {
+        synthetic.push(Event::Button {
+            name: ButtonName::Guide,
+            state: ButtonState::Pressed,
+        });
+        synthetic.push(Event::Tick {
+            elapsed: Duration::from_millis(500),
+        });
+        route(compositor, synthetic).unwrap();
+    }
+
     #[test]
     fn synthetic_pad_mirror_hides_guide_chord_start_and_only_winning_talk() {
         use evdev::KeyCode;
@@ -1274,23 +1302,9 @@ mod synthetic_pad {
                 })
                 .unwrap()
             );
-            for (key, value) in [
-                (KeyCode::BTN_MODE, 1),
-                (KeyCode::BTN_START, 1),
-                (KeyCode::BTN_MODE, 0),
-                (KeyCode::BTN_START, 0),
-            ] {
-                application.mirror_button(&mut compositor, &mut pad, key, value);
-            }
+            mirror_guide_start_chord(&application, &mut compositor, &mut pad);
             if menu_open {
-                synthetic.push(Event::Button {
-                    name: ButtonName::Guide,
-                    state: ButtonState::Pressed,
-                });
-                synthetic.push(Event::Tick {
-                    elapsed: Duration::from_millis(500),
-                });
-                route(&mut compositor, &mut synthetic).unwrap();
+                open_menu_with_synthetic_guide_hold(&mut compositor, &mut synthetic);
             }
             for value in [1, 0] {
                 application.mirror_button(&mut compositor, &mut pad, KeyCode::KEY_RECORD, value);
