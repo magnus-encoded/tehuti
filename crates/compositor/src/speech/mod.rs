@@ -502,3 +502,6 @@ mod tests {
         );
     }
 }
+
+pub mod resolver;
+pub mod resolver_worker;

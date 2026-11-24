@@ -393,6 +393,13 @@ impl State {
         &mut self.core
     }
 
+    /// The phrases a model may choose from for a transcript that matches nothing; see
+    /// [`crate::unmatched_speech_commands`].
+    #[must_use]
+    pub fn unmatched_speech_commands(&self, phrase: &str) -> Option<Vec<String>> {
+        crate::unmatched_speech_commands(&self.core, phrase)
+    }
+
     /// The on-screen keyboard, for drawing it.
     #[must_use]
     pub const fn keyboard(&self) -> &crate::keyboard::Keyboard {
