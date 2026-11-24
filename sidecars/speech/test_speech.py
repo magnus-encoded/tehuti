@@ -881,7 +881,8 @@ time.sleep(60)
             speech.finals_pending = 1
         with contextlib.redirect_stdout(io.StringIO()):
             speech.interim(4, bytes(take.recordings[0].audio), take)
-            time.sleep(0.3)
+            self.assertTrue(speech.interims.acquire(timeout=3))
+            speech.interims.release()
         self.assertEqual(model.calls, [])
 
     def test_an_interim_decodes_only_the_last_five_seconds(self):
@@ -889,12 +890,12 @@ time.sleep(60)
         speech = module.Speech(model, sources=lambda: [None])
         take = module.Take(4)
         speech.capture = take
-        with contextlib.redirect_stdout(io.StringIO()):
+        with contextlib.redirect_stdout(io.StringIO()) as output:
             speech.interim(4, b"\x00\x10" * 16000 * 12, take)
-            deadline = time.monotonic() + 3
-            while not model.calls and time.monotonic() < deadline:
-                time.sleep(0.01)
+            self.assertTrue(speech.interims.acquire(timeout=3))
+            speech.interims.release()
         self.assertEqual(model.calls, [(1, 5.0)])
+        self.assertEqual(json.loads(output.getvalue()), {"session": 4, "interim": "w"})
 
     def test_silent_and_busy_sessions_log_no_backend(self):
         for error in ("silent", "busy"):
