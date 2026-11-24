@@ -1566,20 +1566,8 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
-        if let Some(placements) = self.placements.as_mut() {
-            self.placement.guard_restored_focus(placements);
-            if self.restore_prior_focus() {
-                self.place_layout();
-            }
-        }
-        if let Event::Button { name, state } = event {
-            self.log_button(*name, *state);
-            // The menu opens a moment after Guide goes down; look for holders once, now.
-            if *name == tehuti_protocol::ButtonName::Guide && *state == tehuti_protocol::ButtonState::Pressed
-            {
-                self.scan_display_holders();
-            }
-        }
+        self.settle_restored_focus();
+        self.prepare_button_event(event);
         if matches!(
             event,
             Event::Button {
@@ -1629,6 +1617,26 @@ impl Compositor {
         let _rejection = self.dispatch(input);
         self.after_event(event);
         self.record_screen();
+    }
+
+    fn settle_restored_focus(&mut self) {
+        if let Some(placements) = self.placements.as_mut() {
+            self.placement.guard_restored_focus(placements);
+            if self.restore_prior_focus() {
+                self.place_layout();
+            }
+        }
+    }
+
+    fn prepare_button_event(&mut self, event: &Event) {
+        if let Event::Button { name, state } = event {
+            self.log_button(*name, *state);
+            // The menu opens a moment after Guide goes down; look for holders once, now.
+            if *name == tehuti_protocol::ButtonName::Guide && *state == tehuti_protocol::ButtonState::Pressed
+            {
+                self.scan_display_holders();
+            }
+        }
     }
 
     fn after_event(&mut self, event: &Event) {
