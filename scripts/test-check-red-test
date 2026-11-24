@@ -166,7 +166,18 @@ git commit -qam nojq
 if RED_TEST_BUILD_OK=1 JQ=no-such-jq run; then fail "missing jq should fail"; fi
 grep -q 'jq is required' "$work/out" || fail "jq message missing"
 
-# Fix only in a newly added source file: reported, not skipped.
+# PR adds only new source and test files: accepted without running cargo.
+start new-files-only
+printf 'pub fn f() {}\n' >crates/a/src/new.rs
+printf '#[test]\nfn new_file_test() {}\n' >crates/a/tests/new.rs
+git add -A
+git commit -qm new-files-only
+run || fail "a PR adding only new files should pass"
+grep -q 'newly added source files' "$work/out" || fail "new-files-only explanation missing"
+grep -q 'cannot be reverted to the base; skipping' "$work/out" || fail "skip reason missing"
+[ ! -s "$STUB_LOG" ] || fail "new-files-only change should not run cargo"
+
+# Fix only in a newly added source file: accepted with an explanation.
 start newfile
 fixed
 git checkout -q "$base" -- crates/a/src/lib.rs
@@ -174,6 +185,7 @@ echo 'pub fn f() {}' >crates/a/src/new.rs
 printf '%s\nfn new_file_test() {}\n' "$(cat crates/a/tests/t.rs)" >crates/a/tests/t.rs
 git add -A
 git commit -qm newfile
-if run; then fail "a fix in a new file should not pass silently"; fi
+run || fail "a fix in a new file should pass"
 grep -q 'newly added' "$work/out" || fail "new file not reported"
+
 echo "test-check-red-test: ok"
