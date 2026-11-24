@@ -1286,7 +1286,7 @@ mod synthetic_pad {
             let display: Display<Compositor> = Display::new().unwrap();
             let mut compositor = instant_compositor(&display);
             compositor.set_contexts(vec![tehuti_protocol::parse_context(&format!(
-                    "app_id = 'org.example.Pad'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\nguide = '{guide}'\npush_to_talk = ['record']"
+                    "app_id = 'org.example.Pad'\nbuttons = {{}}\n[pad]\npassthrough = true\nvirtual = true\nguide = '{guide}'\npush_to_talk = ['select']"
                 )).unwrap()]);
             let mut synthetic = SyntheticPad::default();
             synthetic.push(Event::Focus {
@@ -1311,14 +1311,14 @@ mod synthetic_pad {
                 ));
             }
             for value in [1, 0] {
-                application.mirror_button(&mut compositor, &mut pad, KeyCode::KEY_RECORD, value);
+                application.mirror_button(&mut compositor, &mut pad, KeyCode::BTN_SELECT, value);
             }
             let mut expected = Vec::new();
             if guide != "tehuti" {
                 expected.extend([(KeyCode::BTN_MODE.code(), 1), (KeyCode::BTN_MODE.code(), 0)]);
             }
             if menu_open {
-                expected.extend([(KeyCode::KEY_RECORD.code(), 1), (KeyCode::KEY_RECORD.code(), 0)]);
+                expected.extend([(KeyCode::BTN_SELECT.code(), 1), (KeyCode::BTN_SELECT.code(), 0)]);
             }
             assert_eq!(
                 application.keys(),
