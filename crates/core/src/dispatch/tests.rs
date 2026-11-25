@@ -6574,7 +6574,7 @@ fn passthrough_talk_ownership_matches_dispatch_on_press_and_release() {
     use crate::ownership::{Owner, Phase, TalkSource};
 
     for guide in [false, true] {
-        for button in [ButtonName::Select, ButtonName::Record, ButtonName::DpadUp] {
+        for button in [ButtonName::LeftBumper, ButtonName::Record, ButtonName::DpadUp] {
             let context =
                 tehuti_protocol::parse_context("app_id = 'app'\n[buttons]\n[pad]\npassthrough = true")
                     .unwrap();
