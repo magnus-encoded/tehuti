@@ -217,17 +217,16 @@ impl Compositor {
             .placed(|_| 0.0)
             .into_iter()
             .map(|placed| {
-                let app_id = placed
-                    .window
-                    .toplevel()
-                    .and_then(|surface| self.focus_event(surface))
-                    .and_then(|event| {
-                        if let tehuti_protocol::Event::Focus { app_id, .. } = event {
-                            app_id
-                        } else {
-                            None
-                        }
-                    });
+                let app_id = placed.window.toplevel().and_then(|surface| {
+                    smithay::wayland::compositor::with_states(surface.wl_surface(), |states| {
+                        states
+                            .data_map
+                            .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()
+                            .and_then(|data| {
+                                data.lock().ok().and_then(|attributes| attributes.app_id.clone())
+                            })
+                    })
+                });
                 let location = self.space.element_location(placed.window).unwrap_or_default();
                 let size = placed.window.layout_size();
                 json!({"id": placed.identity, "app_id": app_id, "focused": placed.focused,

@@ -2,12 +2,34 @@
 mod tests {
     use serde_json::{Value, json};
     use std::{
-        io::{BufRead, BufReader, Read, Write},
+        io::{Read, Write},
         os::unix::net::UnixStream,
         path::Path,
         process::{Command, Output},
         time::{Duration, Instant},
     };
+
+    #[derive(Debug)]
+    struct EventStream(std::process::Child);
+
+    impl Drop for EventStream {
+        fn drop(&mut self) {
+            let _killed = self.0.kill();
+            let _waited = self.0.wait();
+        }
+    }
+
+    fn await_events(path: &Path, needle: &str) -> String {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            let text = std::fs::read_to_string(path).unwrap();
+            if text.ends_with('\n') && text.contains(needle) {
+                return text;
+            }
+            assert!(Instant::now() < deadline, "event stream did not produce {needle}");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+    }
 
     fn drive(socket: &Path, words: &[&str]) -> Output {
         Command::new(env!("CARGO_BIN_EXE_tehuti-drive"))
@@ -152,19 +174,31 @@ mod tests {
             ] {
                 assert!(!ctl(&socket, words).status.success());
             }
-            let mut events = UnixStream::connect(&socket).unwrap();
-            events.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
-            events
-                .write_all(b"{\"v\":1,\"command\":{\"name\":\"events\"}}\n")
-                .unwrap();
-            let mut events = BufReader::new(events);
-            let mut line = String::new();
-            events.read_line(&mut line).unwrap();
-            assert_eq!(serde_json::from_str::<Value>(&line).unwrap()["event"], "state");
+            let event_path = root.path().join("events.ndjson");
+            let event_process = EventStream(
+                Command::new(env!("CARGO_BIN_EXE_tehuti"))
+                    .args(["ctl", "--json", "--socket"])
+                    .arg(&socket)
+                    .arg("events")
+                    .stdout(std::fs::File::create(&event_path).unwrap())
+                    .spawn()
+                    .unwrap(),
+            );
+            let initial = await_events(&event_path, "\"event\":\"state\"");
+            assert_eq!(
+                serde_json::from_str::<Value>(initial.lines().next().unwrap()).unwrap()["v"],
+                1
+            );
             assert!(drive(&driver, &["press", "south"]).status.success());
-            line.clear();
-            events.read_line(&mut line).unwrap();
-            assert!(line.contains("button"));
+            let _buttons = await_events(&event_path, "\"kind\":\"button\"");
+            assert!(
+                drive(&driver, &["say", "private test transcript"])
+                    .status
+                    .success()
+            );
+            let speech = await_events(&event_path, "\"kind\":\"speech\"");
+            assert!(!speech.contains("private test transcript"));
+            drop(event_process);
             malformed_requests_do_not_block(&socket);
             query(&socket, &["session", "restart"]);
         });
@@ -257,10 +291,38 @@ mod windows {
     use super::recording_client::Client;
     use smithay::reexports::wayland_server::Display;
     use tehuti::{
-        ctl::Command,
         driver::{Driver, Request},
         state::Compositor,
     };
+
+    fn invoke(
+        server: &mut tehuti::ctl::Server,
+        compositor: &mut Compositor,
+        directory: &std::path::Path,
+        words: &[&str],
+    ) -> serde_json::Value {
+        let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tehuti"))
+            .args(["ctl", "--json", "--socket"])
+            .arg(directory.join("control/ctl"))
+            .args(words)
+            .stdout(std::process::Stdio::piped())
+            .stderr(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
+        let deadline = std::time::Instant::now() + core::time::Duration::from_secs(5);
+        while child.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
+            server.poll(|command| compositor.control(command, directory));
+            std::thread::sleep(core::time::Duration::from_millis(1));
+        }
+        let _killed = child.kill();
+        let output = child.wait_with_output().unwrap();
+        assert!(
+            output.status.success(),
+            "{words:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        serde_json::from_slice(&output.stdout).unwrap()
+    }
 
     #[test]
     fn window_ids_support_focus_layout_capture_and_close() {
@@ -275,38 +337,56 @@ mod windows {
         second.paint(&mut display, &mut compositor, [30, 20, 10, 255]);
         let scene = driver.execute(&mut compositor, Request::Scene).unwrap();
         let identity = scene["windows"][0]["id"].as_u64().unwrap();
-        let _reply = compositor
-            .control(Command::Focus { identity }, directory.path())
-            .unwrap();
+        let mut server = tehuti::ctl::Server::bind(directory.path().join("control/ctl")).unwrap();
+        let windows = invoke(&mut server, &mut compositor, directory.path(), &["windows"]);
+        assert!(
+            windows["ok"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|window| window["app_id"] == "org.example.Game")
+        );
+        let _reply = invoke(
+            &mut server,
+            &mut compositor,
+            directory.path(),
+            &["focus", &identity.to_string()],
+        );
         assert_eq!(
             driver.execute(&mut compositor, Request::Scene).unwrap()["focus"],
             identity
         );
-        let _reply = compositor
-            .control(
-                Command::Layout {
-                    action: tehuti_protocol::LayoutAction::ToggleFullscreen,
-                },
-                directory.path(),
-            )
-            .unwrap();
+        let _reply = invoke(
+            &mut server,
+            &mut compositor,
+            directory.path(),
+            &["layout", "toggle-fullscreen"],
+        );
         let path = directory.path().join("window.png");
-        let _reply = compositor
-            .control(Command::ShotWindow { path: path.clone() }, directory.path())
-            .unwrap();
+        let _reply = invoke(
+            &mut server,
+            &mut compositor,
+            directory.path(),
+            &["shot", "window", path.to_str().unwrap()],
+        );
         assert!(image::image_dimensions(path).unwrap().0 > 0);
-        let _reply = compositor
-            .control(
-                Command::Close {
-                    identity: Some(identity),
-                },
-                directory.path(),
-            )
-            .unwrap();
-        assert!(
-            compositor
-                .control(Command::Focus { identity }, directory.path())
-                .is_err()
+        let _reply = invoke(
+            &mut server,
+            &mut compositor,
+            directory.path(),
+            &["close", &identity.to_string()],
+        );
+        assert_eq!(
+            driver.execute(&mut compositor, Request::Scene).unwrap()["windows"]
+                .as_array()
+                .unwrap()
+                .len(),
+            1
+        );
+        let _reply = invoke(&mut server, &mut compositor, directory.path(), &["close"]);
+        assert_eq!(
+            driver.execute(&mut compositor, Request::Scene).unwrap()["windows"],
+            serde_json::json!([])
         );
         first.finish();
         second.finish();
@@ -327,12 +407,12 @@ mod credentials {
         let private = directory.path().join("control");
         let path = private.join("ctl");
         let mut server = tehuti::ctl::Server::bind(path.clone()).unwrap();
-        for (path, mode) in [
+        for (accessible, mode) in [
             (directory.path(), 0o755),
             (private.as_path(), 0o755),
             (path.as_path(), 0o666),
         ] {
-            std::fs::set_permissions(path, std::fs::Permissions::from_mode(mode)).unwrap();
+            std::fs::set_permissions(accessible, std::fs::Permissions::from_mode(mode)).unwrap();
         }
         let mut child = Command::new("sudo").args(["-n", "-u", "nobody", "python3", "-c", "import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(sys.argv[1]); s.sendall(b'{\"v\":1,\"command\":{\"name\":\"status\"}}\\n');\ntry: data=s.recv(1024)\nexcept ConnectionResetError: data=b''\nassert data == b'', data"]).arg(&path).spawn().unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);

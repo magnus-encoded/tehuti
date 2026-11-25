@@ -134,8 +134,6 @@ fn not_yet(group: &str) -> String {
         "update" => 923,
         "help-overlay" => 924,
         "toggle" | "toggles" | "bar" => 925,
-        "wallpaper" => 928,
-        "settings" => 928,
         "session" => 341,
         _ => 928,
     };

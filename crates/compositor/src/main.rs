@@ -1339,6 +1339,47 @@ fn pump_virtual_pads(data: &mut LoopData) {
     }
 }
 
+fn poll_nested_control(data: &mut LoopData) {
+    if let Some(mut control) = data.control.take() {
+        control.poll(|command| {
+            if let tehuti::ctl::Command::DisplayMode { mode: value } = command {
+                let request = tehuti::output_mode::Request::parse(&value).ok_or("invalid output mode")?;
+                let output = data.compositor.output.clone().ok_or("no active output")?;
+                let current = output.current_mode().ok_or("no output mode")?;
+                let modes = output.modes();
+                let candidates: Vec<_> = modes
+                    .iter()
+                    .filter_map(|mode| {
+                        Some((
+                            u16::try_from(mode.size.w).ok()?,
+                            u16::try_from(mode.size.h).ok()?,
+                            u32::try_from(mode.refresh).ok()?.checked_div(1000)?,
+                        ))
+                    })
+                    .collect();
+                let target = match request {
+                    tehuti::output_mode::Request::Restore => None,
+                    tehuti::output_mode::Request::Set { .. } => Some(
+                        *request
+                            .closest(&candidates)
+                            .and_then(|index| modes.get(index))
+                            .ok_or("no supported output modes")?,
+                    ),
+                };
+                data.control_mode.apply(current, target, |mode| {
+                    output.change_current_state(Some(mode), None, None, None);
+                    data.compositor.fill_output();
+                    Ok::<_, String>(())
+                })?;
+                Ok(serde_json::json!({}))
+            } else {
+                data.compositor.control(command, &data.control_directory)
+            }
+        });
+        data.control = Some(control);
+    }
+}
+
 #[cfg(test)]
 mod exit_code_tests {
     use super::exit_code;
@@ -1403,46 +1444,5 @@ restart = { restart = true }",
     #[test]
     fn external_shutdown_exits_successfully() {
         assert_eq!(exit_code(false, false, false), std::process::ExitCode::SUCCESS);
-    }
-}
-
-fn poll_nested_control(data: &mut LoopData) {
-    if let Some(mut control) = data.control.take() {
-        control.poll(|command| {
-            if let tehuti::ctl::Command::DisplayMode { mode } = command {
-                let request = tehuti::output_mode::Request::parse(&mode).ok_or("invalid output mode")?;
-                let output = data.compositor.output.clone().ok_or("no active output")?;
-                let current = output.current_mode().ok_or("no output mode")?;
-                let modes = output.modes();
-                let candidates: Vec<_> = modes
-                    .iter()
-                    .filter_map(|mode| {
-                        Some((
-                            u16::try_from(mode.size.w).ok()?,
-                            u16::try_from(mode.size.h).ok()?,
-                            u32::try_from(mode.refresh).ok()?.checked_div(1000)?,
-                        ))
-                    })
-                    .collect();
-                let target = match request {
-                    tehuti::output_mode::Request::Restore => None,
-                    tehuti::output_mode::Request::Set { .. } => Some(
-                        *request
-                            .closest(&candidates)
-                            .and_then(|index| modes.get(index))
-                            .ok_or("no supported output modes")?,
-                    ),
-                };
-                data.control_mode.apply(current, target, |mode| {
-                    output.change_current_state(Some(mode), None, None, None);
-                    data.compositor.fill_output();
-                    Ok::<_, String>(())
-                })?;
-                Ok(serde_json::json!({}))
-            } else {
-                data.compositor.control(command, &data.control_directory)
-            }
-        });
-        data.control = Some(control);
     }
 }

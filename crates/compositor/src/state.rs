@@ -3,6 +3,9 @@
 #[path = "recording.rs"]
 mod recording;
 
+#[path = "ctl_state.rs"]
+mod control;
+
 use std::time::Instant;
 
 use crate::layout_window::LayoutWindow;
@@ -5137,6 +5140,3 @@ mod tests {
         assert!(compositor.take_release_request().is_some());
     }
 }
-
-#[path = "ctl_state.rs"]
-mod control;
