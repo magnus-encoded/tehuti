@@ -10,6 +10,65 @@ mod quick_info {
     };
     use tehuti_protocol::{Action, ButtonName, ButtonState, Event, KeyName, Text, parse_context};
 
+    const fn reply_for(effect: &Effect) -> Option<Input> {
+        match effect {
+            Effect::ReadClock => Some(Input::ClockRead(Duration::ZERO)),
+            Effect::QueryPlugin(_) => Some(Input::PluginActive(false)),
+            Effect::DispatchPlugin { .. } => Some(Input::PluginRequest(None)),
+            Effect::Supervise => Some(Input::Supervised(Vec::new())),
+            Effect::ConfirmSecret(_) => Some(Input::SecretConfirmation(false)),
+            Effect::SpeechCommand(_) => Some(Input::SpeechSent(true)),
+            Effect::PollSpeech(_) => Some(Input::SpeechPolled(Vec::new())),
+            Effect::Handle(_) => panic!("unexpected nested handle effect"),
+            Effect::InvalidReply => panic!("unexpected invalid reply"),
+            Effect::ChooseLauncher(_)
+            | Effect::LauncherUsed(_)
+            | Effect::OpenLauncher(_)
+            | Effect::AdjusterValue { .. }
+            | Effect::ReadVolume
+            | Effect::ReadWindowSize(_)
+            | Effect::SetWindowSize { .. }
+            | Effect::SetVolume(_)
+            | Effect::PasswordSpeechIgnored
+            | Effect::ShowInfo(_)
+            | Effect::DismissInfo
+            | Effect::RunMenuCommand(_)
+            | Effect::SettingsMode(_)
+            | Effect::PersistMode(_)
+            | Effect::SettingsScale(_)
+            | Effect::SettingsBarFont(_)
+            | Effect::WallpaperPreview(_)
+            | Effect::WallpaperSave(_)
+            | Effect::UnlockWallpapers
+            | Effect::SettingsController(_)
+            | Effect::PersistController(_)
+            | Effect::PersistControllerTalk(_, _)
+            | Effect::PersistControllerDeadzone(_, _)
+            | Effect::RecentreController(_)
+            | Effect::SettingsMicrophone(_)
+            | Effect::SettingsControllerEnabled { .. }
+            | Effect::SettingsMicrophoneEnabled { .. }
+            | Effect::ListMicrophones
+            | Effect::ListRemoteHosts
+            | Effect::ConnectRemoteMicrophone { .. }
+            | Effect::MovePointer { .. }
+            | Effect::Scroll { .. }
+            | Effect::Click { .. }
+            | Effect::MouseMode(_)
+            | Effect::PollSources
+            | Effect::Chord(_)
+            | Effect::ConfirmPressed(_)
+            | Effect::ResetSecretFocus
+            | Effect::FocusGapExpired
+            | Effect::Apply(_)
+            | Effect::PluginAction(_)
+            | Effect::PluginRejected(_)
+            | Effect::SpeechFailed { .. }
+            | Effect::TranscriptReceived { .. }
+            | Effect::SpeechRouted { .. } => None,
+        }
+    }
+
     fn run(mut state: DispatchState, input: Input) -> (DispatchState, Vec<Effect>) {
         let mut trace = Vec::new();
         let (next, mut effects) = dispatch_step(state, input);
@@ -17,63 +76,8 @@ mod quick_info {
         while !effects.is_empty() || state.busy() > 0 {
             let mut reply = None;
             for effect in effects.drain(..) {
-                trace.push(effect.clone());
-                reply = match effect {
-                    Effect::ReadClock => Some(Input::ClockRead(Duration::ZERO)),
-                    Effect::QueryPlugin(_) => Some(Input::PluginActive(false)),
-                    Effect::DispatchPlugin { .. } => Some(Input::PluginRequest(None)),
-                    Effect::Supervise => Some(Input::Supervised(Vec::new())),
-                    Effect::ConfirmSecret(_) => Some(Input::SecretConfirmation(false)),
-                    Effect::SpeechCommand(_) => Some(Input::SpeechSent(true)),
-                    Effect::PollSpeech(_) => Some(Input::SpeechPolled(Vec::new())),
-                    Effect::Handle(_) => panic!("unexpected nested handle effect"),
-                    Effect::InvalidReply => panic!("unexpected invalid reply"),
-                    Effect::ChooseLauncher(_)
-                    | Effect::LauncherUsed(_)
-                    | Effect::OpenLauncher(_)
-                    | Effect::AdjusterValue { .. }
-                    | Effect::ReadVolume
-                    | Effect::ReadWindowSize(_)
-                    | Effect::SetWindowSize { .. }
-                    | Effect::SetVolume(_)
-                    | Effect::PasswordSpeechIgnored
-                    | Effect::ShowInfo(_)
-                    | Effect::DismissInfo
-                    | Effect::RunMenuCommand(_)
-                    | Effect::SettingsMode(_)
-                    | Effect::PersistMode(_)
-                    | Effect::SettingsScale(_)
-                    | Effect::SettingsBarFont(_)
-                    | Effect::WallpaperPreview(_)
-                    | Effect::WallpaperSave(_)
-                    | Effect::UnlockWallpapers
-                    | Effect::SettingsController(_)
-                    | Effect::PersistController(_)
-                    | Effect::PersistControllerTalk(_, _)
-                    | Effect::PersistControllerDeadzone(_, _)
-                    | Effect::RecentreController(_)
-                    | Effect::SettingsMicrophone(_)
-                    | Effect::SettingsControllerEnabled { .. }
-                    | Effect::SettingsMicrophoneEnabled { .. }
-                    | Effect::ListMicrophones
-                    | Effect::ListRemoteHosts
-                    | Effect::ConnectRemoteMicrophone { .. }
-                    | Effect::MovePointer { .. }
-                    | Effect::Scroll { .. }
-                    | Effect::Click { .. }
-                    | Effect::MouseMode(_)
-                    | Effect::PollSources
-                    | Effect::Chord(_)
-                    | Effect::ConfirmPressed(_)
-                    | Effect::ResetSecretFocus
-                    | Effect::FocusGapExpired
-                    | Effect::Apply(_)
-                    | Effect::PluginAction(_)
-                    | Effect::PluginRejected(_)
-                    | Effect::SpeechFailed { .. }
-                    | Effect::TranscriptReceived { .. }
-                    | Effect::SpeechRouted { .. } => None,
-                };
+                reply = reply_for(&effect);
+                trace.push(effect);
                 if reply.is_some() {
                     break;
                 }

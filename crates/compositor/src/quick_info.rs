@@ -161,7 +161,7 @@ fn parse_status(raw: Option<&str>) -> BatteryStatus {
         Some("discharging") => BatteryStatus::Discharging,
         Some("full") => BatteryStatus::Full,
         Some("not charging") => BatteryStatus::NotCharging,
-        _ => BatteryStatus::Unknown,
+        Some(_) | None => BatteryStatus::Unknown,
     }
 }
 

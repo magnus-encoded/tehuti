@@ -115,13 +115,15 @@ pub fn notice_text(item: InfoItem, reading: &Reading) -> String {
     match item {
         InfoItem::Time => format!("{label}: {}", reading.time),
         InfoItem::Date => format!("{label}: {}", reading.date),
-        InfoItem::Battery => match reading.battery {
-            None => format!("{label}: no battery"),
-            Some(battery) => match battery.status().label() {
-                Some(status) => format!("{label}: {}% {status}", battery.percent()),
-                None => format!("{label}: {}%", battery.percent()),
+        InfoItem::Battery => reading.battery.map_or_else(
+            || format!("{label}: no battery"),
+            |battery| {
+                battery.status().label().map_or_else(
+                    || format!("{label}: {}%", battery.percent()),
+                    |status| format!("{label}: {}% {status}", battery.percent()),
+                )
             },
-        },
+        ),
     }
 }
 
@@ -169,7 +171,7 @@ impl QuickInfo {
     }
 
     /// Advances the expiry timer; true when the notice just expired.
-    pub fn tick(&mut self, elapsed: Duration) -> bool {
+    pub const fn tick(&mut self, elapsed: Duration) -> bool {
         if self.shown.is_none() {
             return false;
         }

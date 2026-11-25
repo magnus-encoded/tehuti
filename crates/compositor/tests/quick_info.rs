@@ -87,6 +87,17 @@ mod quick_info {
         );
     }
 
+    fn press_button(compositor: &mut Compositor, name: ButtonName) {
+        compositor.handle(&Event::Button {
+            name,
+            state: ButtonState::Pressed,
+        });
+        compositor.handle(&Event::Button {
+            name,
+            state: ButtonState::Released,
+        });
+    }
+
     #[test]
     fn pad_cycle_steps_notices_and_b_dismisses() {
         let power = tempfile::tempdir().unwrap();
@@ -95,45 +106,35 @@ mod quick_info {
         write_file(power.path(), "BAT0/status", "Discharging\n");
 
         let (_display, mut compositor) = compositor_with(power.path());
-        let press = |compositor: &mut Compositor, name: ButtonName| {
-            compositor.handle(&Event::Button {
-                name,
-                state: ButtonState::Pressed,
-            });
-            compositor.handle(&Event::Button {
-                name,
-                state: ButtonState::Released,
-            });
-        };
 
-        press(&mut compositor, ButtonName::West);
+        press_button(&mut compositor, ButtonName::West);
         assert_eq!(
             compositor.visible_notice_text().as_deref(),
             Some("what time is it: 14:35")
         );
 
-        press(&mut compositor, ButtonName::West);
+        press_button(&mut compositor, ButtonName::West);
         assert_eq!(
             compositor.visible_notice_text().as_deref(),
             Some("date: Wed 2026-11-25")
         );
 
-        press(&mut compositor, ButtonName::West);
+        press_button(&mut compositor, ButtonName::West);
         assert_eq!(
             compositor.visible_notice_text().as_deref(),
             Some("battery: 64% discharging")
         );
 
-        press(&mut compositor, ButtonName::West);
+        press_button(&mut compositor, ButtonName::West);
         assert_eq!(
             compositor.visible_notice_text().as_deref(),
             Some("what time is it: 14:35")
         );
 
-        press(&mut compositor, ButtonName::East);
+        press_button(&mut compositor, ButtonName::East);
         assert_eq!(compositor.visible_notice_text(), None);
 
-        press(&mut compositor, ButtonName::West);
+        press_button(&mut compositor, ButtonName::West);
         assert_eq!(
             compositor.visible_notice_text().as_deref(),
             Some("what time is it: 14:35")
