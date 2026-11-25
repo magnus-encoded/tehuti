@@ -327,6 +327,7 @@ pub struct State {
     launcher: Option<crate::launcher::Launcher>,
     choice_list: Option<crate::choice_list::List>,
     choice_buttons: Vec<ButtonName>,
+    capture: CaptureChoice,
     overlay_stack: Vec<Overlay>,
     secret_prompt: SecretPrompt,
     adjuster: Option<crate::adjuster::Gauge>,
@@ -335,8 +336,15 @@ pub struct State {
     size_pending: Option<crate::adjuster::SizeAxis>,
     adjusters: Vec<(usize, tehuti_protocol::Adjuster)>,
     adjuster_buttons: Vec<ButtonName>,
-    /// The left stick's last vertical sample, so a gauge opens already moving.
-    adjuster_stick: i16,
+    /// The left stick's last sample, so a gauge or choice list knows whether it is already held.
+    left_stick: (i16, i16),
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+struct CaptureChoice {
+    recording: bool,
+    commands: Vec<crate::menu::Command>,
+    stick_engaged: bool,
 }
 
 impl State {
@@ -361,6 +369,7 @@ impl State {
             launcher: None,
             choice_list: None,
             choice_buttons: Vec::new(),
+            capture: CaptureChoice::default(),
             overlay_stack: Vec::new(),
             secret_prompt: SecretPrompt::Hidden,
             adjuster: None,
@@ -368,14 +377,19 @@ impl State {
             size_pending: None,
             adjusters: Vec::new(),
             adjuster_buttons: Vec::new(),
-            adjuster_stick: 0,
+            left_stick: (0, 0),
         }
+    }
+
+    pub const fn set_recording(&mut self, recording: bool) {
+        self.capture.recording = recording;
     }
 
     #[must_use]
     pub fn overlay_owns_pad(&self) -> bool {
         self.adjuster.is_some()
             || self.volume_pending == crate::adjuster::VolumeRead::Pending
+            || (!self.capture.commands.is_empty() && self.choice_list_open())
             || (self.tool_pad == ToolPad::Held && (self.keyboard.is_open() || self.mouse.active()))
     }
 
@@ -732,6 +746,8 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         Input::WindowSize(value) => (size_read(state, value), Vec::new()),
         Input::ChoiceList(slots) => {
             state.launcher = None;
+            state.capture.commands.clear();
+            state.capture.stick_engaged = stick_engaged(state.left_stick);
             state.choice_list = Some(crate::choice_list::List::new(slots));
             (state, Vec::new())
         }
@@ -778,6 +794,8 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
 
 fn open_launcher(mut state: State, launcher: crate::launcher::Launcher) -> (State, Vec<Effect>) {
     state.choice_list = None;
+    state.capture.commands.clear();
+    state.capture.stick_engaged = stick_engaged(state.left_stick);
     state.launcher = Some(launcher);
     let mut effects = Vec::new();
     release_pad(&mut state, Handoff::Open(Overlay::ChoiceList), &mut effects);
@@ -990,13 +1008,54 @@ fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
     release_pad(state, Handoff::Disconnect, effects);
     state.opening_button = None;
     state.choice_buttons.clear();
+    if !state.capture.commands.is_empty() {
+        state.capture.commands.clear();
+        state.choice_list = None;
+    }
+    state.capture.stick_engaged = false;
+    state.left_stick = (0, 0);
     state.core.controller_disconnected();
 }
 
+fn stick_engaged(left: (i16, i16)) -> bool {
+    u32::from(left.0.unsigned_abs().max(left.1.unsigned_abs())) >= crate::stick_actions::RELEASE_DEFLECTION
+}
+
 fn update_sticks(state: &mut State, sticks: Sticks) {
-    if !state.choice_list_open() && !state.core.passthrough() && state.core.menu().is_none() {
+    if state.choice_list_open() && !state.settings.open && state.core.menu().is_none() {
+        step_choice_list_stick(state, sticks.left);
+        return;
+    }
+    state.capture.stick_engaged = false;
+    if !state.core.passthrough() && state.core.menu().is_none() {
         state.keyboard.left_stick(sticks.left.0, sticks.left.1);
         state.mouse.sticks = sticks;
+    }
+}
+
+fn step_choice_list_stick(state: &mut State, left: (i16, i16)) {
+    let deflection = u32::from(left.0.unsigned_abs().max(left.1.unsigned_abs()));
+    if deflection < crate::stick_actions::RELEASE_DEFLECTION {
+        state.capture.stick_engaged = false;
+        return;
+    }
+    if state.capture.stick_engaged || deflection < crate::stick_actions::FIRE_DEFLECTION {
+        return;
+    }
+    state.capture.stick_engaged = true;
+    let forward = if left.1.unsigned_abs() >= left.0.unsigned_abs() {
+        left.1 > 0
+    } else {
+        left.0 > 0
+    };
+    if let Some(launcher) = state
+        .launcher
+        .as_mut()
+        .filter(|launcher| launcher.list().is_open())
+    {
+        launcher.move_selection(forward);
+    } else if let Some(list) = state.choice_list.as_mut().filter(|list| list.is_open()) {
+        list.move_selection(forward);
     }
 }
 
@@ -1089,6 +1148,7 @@ fn finish_handoff(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>
         }
         Handoff::Passthrough => {
             state.settings.close(effects);
+            state.capture.commands.clear();
             if let Some(list) = &mut state.choice_list {
                 list.cancel();
             }
@@ -1489,17 +1549,47 @@ fn adjuster_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
     true
 }
 
-fn recording_event(event: &Event, effects: &mut Vec<Effect>) -> bool {
+fn capture_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
     let Event::Speech { text } = event else {
         return false;
     };
-    let command = match tehuti_protocol::normalize_phrase(text.as_str()).as_str() {
-        "start recording" => crate::menu::Command::StartRecording,
-        "stop recording" => crate::menu::Command::StopRecording,
-        _ => return false,
+    let Some(command) = crate::menu::capture_phrase(text.as_str()) else {
+        return false;
     };
+    if !state.capture.commands.is_empty() {
+        state.capture.commands.clear();
+        state.choice_list = None;
+    }
     effects.push(Effect::RunMenuCommand(command));
     true
+}
+
+fn capture_chord(state: &mut State, event: &Event) -> bool {
+    let Event::Button { name, state: button } = event else {
+        return false;
+    };
+    if state.core.chord_owner(*name, (*button).into()) != Some(crate::ownership::Why::GuideCaptureChord) {
+        return false;
+    }
+    if *button == ButtonState::Pressed && (state.core.menu().is_some() || state.settings.open) {
+        return false;
+    }
+    let fresh = *button == ButtonState::Pressed && !state.core.chord_button_held(*name);
+    let _actions = crate::escape_chord(&mut state.core, event);
+    if fresh {
+        open_capture_choice(state);
+    }
+    true
+}
+
+fn open_capture_choice(state: &mut State) {
+    let options = crate::menu::capture_options(state.capture.recording);
+    state.launcher = None;
+    state.capture.commands = options.into_iter().map(|(command, _, _)| command).collect();
+    state.choice_list = Some(crate::choice_list::List::ordered(
+        crate::menu::capture_choice_slots(state.capture.recording),
+    ));
+    state.capture.stick_engaged = stick_engaged(state.left_stick);
 }
 
 #[expect(
@@ -1667,16 +1757,6 @@ fn guide_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
 }
 
 fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
-    if let Event::Button {
-        name,
-        state: ButtonState::Released,
-    } = event
-        && (state.choice_buttons.contains(name) || state.adjuster_buttons.contains(name))
-    {
-        state.adjuster_buttons.retain(|held| held != name);
-        state.choice_buttons.retain(|held| held != name);
-        return true;
-    }
     sync_keyboard_config(state);
     let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
     if adjuster_phrase(state, event, dictation, effects)
@@ -1701,6 +1781,9 @@ fn settings_phrase(state: &mut State, event: &Event, dictation: bool, effects: &
 fn reserved_safety(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
     if !dictation && emergency_button(state, event) {
         return system_menu(state, event, effects);
+    }
+    if !dictation && capture_chord(state, event) {
+        return true;
     }
     if (dictation || state.core.menu().is_none()) && password_suppresses(state, event) {
         effects.push(Effect::PasswordSpeechIgnored);
@@ -1743,7 +1826,7 @@ fn overlay_input(
             {
                 !matches!(event, Event::Tick { .. }) && launcher_event(state, event, effects)
             } else {
-                choice_list_input(state, event)
+                choice_list_input(state, event, effects)
             }
         }
         Overlay::Adjuster => adjuster_input(state, event, effects),
@@ -1837,7 +1920,7 @@ fn launcher_step(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
     }
 }
 
-fn choice_list_input(state: &mut State, event: &Event) -> bool {
+fn choice_list_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
     let Event::Button { name, state: button } = event else {
         return state.choice_list_open() && matches!(event, Event::Speech { .. });
     };
@@ -1847,6 +1930,7 @@ fn choice_list_input(state: &mut State, event: &Event) -> bool {
     if *button == ButtonState::Pressed && !state.choice_buttons.contains(name) {
         state.choice_buttons.push(*name);
         let family = state.core.pad_family();
+        let mut outcome = None;
         if let Some(list) = &mut state.choice_list {
             if *name == family.button(crate::pad::Role::Back) {
                 list.cancel();
@@ -1857,9 +1941,39 @@ fn choice_list_input(state: &mut State, event: &Event) -> bool {
             } else if *name == ButtonName::DpadDown {
                 list.move_selection(true);
             }
+            outcome = Some(list.outcome());
         }
+        finish_capture_choice(state, outcome, effects);
     }
     true
+}
+
+fn finish_capture_choice(
+    state: &mut State,
+    outcome: Option<crate::choice_list::Outcome>,
+    effects: &mut Vec<Effect>,
+) {
+    if state.capture.commands.is_empty() {
+        return;
+    }
+    match outcome {
+        Some(crate::choice_list::Outcome::Picked(crate::choice_list::Choice::Candidate(index))) => {
+            let commands = core::mem::take(&mut state.capture.commands);
+            state.choice_list = None;
+            if let Some(&command) = commands.get(index) {
+                effects.push(Effect::RunMenuCommand(command));
+            }
+        }
+        Some(crate::choice_list::Outcome::Cancelled) => {
+            state.capture.commands.clear();
+            state.choice_list = None;
+        }
+        Some(
+            crate::choice_list::Outcome::Pending
+            | crate::choice_list::Outcome::Picked(crate::choice_list::Choice::Create),
+        )
+        | None => {}
+    }
 }
 
 fn secret_input(state: &mut State, event: &Event) -> bool {
@@ -1925,7 +2039,10 @@ fn mouse_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
 }
 
 fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
-    if crate::menu_button_release(&mut state.core, &event) || system_menu(state, &event, effects) {
+    if crate::menu_button_release(&mut state.core, &event)
+        || system_menu(state, &event, effects)
+        || capture_chord(state, &event)
+    {
         return;
     }
     if state.keyboard.password_field_active() && matches!(event, Event::Speech { .. }) {
@@ -2033,7 +2150,7 @@ fn passthrough_view_talk(state: &mut State) {
 }
 
 fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
-    if !password_suppresses(state, &event) && recording_event(&event, effects) {
+    if !password_suppresses(state, &event) && capture_event(state, &event, effects) {
         return;
     }
     // Released here, before any layer that consumes the release, so a held key never sticks.
@@ -2044,6 +2161,16 @@ fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>)
         && let Some(release) = state.core.release_held_button(name)
     {
         effects.push(Effect::Apply(release));
+    }
+    if let Event::Button {
+        name,
+        state: ButtonState::Released,
+    } = &event
+        && (state.choice_buttons.contains(name) || state.adjuster_buttons.contains(name))
+    {
+        state.adjuster_buttons.retain(|held| held != name);
+        state.choice_buttons.retain(|held| held != name);
+        return;
     }
     if state.core.passthrough() {
         if adjuster_phrase(state, &event, false, effects) {

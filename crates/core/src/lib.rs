@@ -624,6 +624,10 @@ impl State {
         self.guide_held.is_some()
     }
 
+    pub(crate) fn chord_button_held(&self, button: ButtonName) -> bool {
+        self.chord_buttons.contains(&button)
+    }
+
     /// Shows on the bar what the on-screen keyboard did with speech.
     pub(crate) fn keyboard_feedback(&mut self, text: &str) {
         self.bar.keyboard_feedback(text);
@@ -997,12 +1001,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
             return None;
         }
         let phrase = text.as_str();
-        if unit_verbs::launcher_request(phrase).is_some()
-            || matches!(
-                tehuti_protocol::normalize_phrase(phrase).as_str(),
-                "start recording" | "stop recording"
-            )
-        {
+        if unit_verbs::launcher_request(phrase).is_some() || menu::capture_phrase(phrase).is_some() {
             return None;
         }
         if state.level == Level::App {
@@ -1231,6 +1230,19 @@ fn guide_dpad(state: &mut State, name: ButtonName, button: ButtonState) -> Vec<A
     }
 }
 
+/// Right bumper in a Guide chord: cancels the Guide tap and tracks its release.
+fn guide_capture(state: &mut State, name: ButtonName, button: ButtonState) -> Vec<Action> {
+    state.guide_tap = None;
+    match button {
+        ButtonState::Pressed if !state.chord_buttons.contains(&name) => {
+            state.chord_buttons.push(name);
+        }
+        ButtonState::Pressed => {}
+        ButtonState::Released => state.chord_buttons.retain(|held| *held != name),
+    }
+    Vec::new()
+}
+
 fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     match event {
         Event::Button {
@@ -1244,6 +1256,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
                     Some(Vec::new())
                 }
                 Some(ownership::Why::GuideDpadChord) => Some(guide_dpad(state, *name, *button_state)),
+                Some(ownership::Why::GuideCaptureChord) => Some(guide_capture(state, *name, *button_state)),
                 _ if *name == ButtonName::Start => {
                     state.start_held = *button_state == ButtonState::Pressed;
                     if state.start_held {

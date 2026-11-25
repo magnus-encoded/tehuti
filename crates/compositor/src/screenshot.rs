@@ -50,6 +50,52 @@ pub(crate) fn save(compositor: &Compositor) -> Result<PathBuf, Box<dyn Error>> {
     Ok(path)
 }
 
+#[expect(
+    clippy::redundant_pub_crate,
+    reason = "capture adapters remain private to the compositor"
+)]
+pub(crate) fn save_window(compositor: &Compositor) -> Result<PathBuf, Box<dyn Error>> {
+    let bounds = compositor
+        .focused_window_capture_bounds()
+        .ok_or("no focused window")?;
+    let directory = pictures_directory()?.join("Screenshots");
+    std::fs::create_dir_all(&directory)?;
+    let now = chrono::Local::now();
+    let path = directory.join(format!("Screenshot-{}.png", now.format("%Y-%m-%d_%H-%M-%S-%f")));
+    let frame = crate::driver_shot::frame(compositor, &now.format("%H:%M").to_string())?;
+    let (left, top, width, height) =
+        clamp_crop(bounds, frame.width(), frame.height()).ok_or("focused window is outside the output")?;
+    image::imageops::crop_imm(&frame, left, top, width, height)
+        .to_image()
+        .save_with_format(&path, image::ImageFormat::Png)?;
+    Ok(path)
+}
+
+fn clamp_crop(
+    (x, y, width, height): (i32, i32, i32, i32),
+    frame_width: u32,
+    frame_height: u32,
+) -> Option<(u32, u32, u32, u32)> {
+    let right = x.saturating_add(width);
+    let bottom = y.saturating_add(height);
+    let max_x = i32::try_from(frame_width).unwrap_or(i32::MAX);
+    let max_y = i32::try_from(frame_height).unwrap_or(i32::MAX);
+    let left = x.clamp(0, max_x);
+    let top = y.clamp(0, max_y);
+    let right = right.clamp(left, max_x);
+    let bottom = bottom.clamp(top, max_y);
+    let cropped_width = u32::try_from(right.saturating_sub(left)).ok()?;
+    let cropped_height = u32::try_from(bottom.saturating_sub(top)).ok()?;
+    (cropped_width > 0 && cropped_height > 0).then(|| {
+        (
+            u32::try_from(left).unwrap_or_default(),
+            u32::try_from(top).unwrap_or_default(),
+            cropped_width,
+            cropped_height,
+        )
+    })
+}
+
 fn pictures_directory() -> Result<PathBuf, Box<dyn Error>> {
     if let Some(path) = std::env::var_os("XDG_PICTURES_DIR").filter(|value| !value.is_empty()) {
         let path = PathBuf::from(path);

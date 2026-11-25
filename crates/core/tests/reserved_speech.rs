@@ -10,6 +10,9 @@ mod reserved_speech {
             "åpne notes",
             "work notes",
             "work on notes",
+            "Screenshot.",
+            "screenshot window",
+            "SCREENSHOT WINDOW!",
             "Start recording.",
             "STOP RECORDING!",
         ] {
