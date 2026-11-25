@@ -26,7 +26,7 @@ mod plugin_exit_claims {
     #[test]
     fn exit_settles_only_its_requests_and_words_together() {
         use tehuti_core::plugin::RequestKey;
-        use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Text, parse_context};
+        use tehuti_protocol::{Action, ButtonName, ButtonState, Event, Permission, Text, parse_context};
 
         let context = parse_context("app_id = '*'\n[buttons]\neast = { text = 'fallback' }").unwrap();
         let mut state = State::with_contexts(vec![context]);
@@ -43,7 +43,7 @@ mod plugin_exit_claims {
                         name: ButtonName::East,
                         state: ButtonState::Pressed,
                     },
-                    permissions: Vec::new(),
+                    permissions: vec![Permission::Text],
                 },
             );
         }
@@ -61,10 +61,12 @@ mod plugin_exit_claims {
                     plugin: 0,
                     request_id: 0,
                 },
-                result: Ok(Vec::new()),
+                result: Ok(vec![Action::Text {
+                    text: Text::new("late".into()).unwrap(),
+                }]),
             },
         );
-        assert!(late.is_empty(), "the exited request cannot fall back twice");
+        assert_eq!(late, Vec::<Action>::new(), "the exited request cannot act again");
         let (state, surviving, _) = plugin::step(
             state,
             Input::Reply {
@@ -78,7 +80,7 @@ mod plugin_exit_claims {
         assert_eq!(surviving, fallback, "the other request remains pending");
         assert_eq!(state.plugin_invoke_words(), ["word-1"]);
         let (_, duplicate, _) = plugin::step(state, Input::Exited { plugin: 0 });
-        assert!(duplicate.is_empty());
+        assert_eq!(duplicate, Vec::<Action>::new());
     }
 
     proptest! {
