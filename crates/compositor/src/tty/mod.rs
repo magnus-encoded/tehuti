@@ -45,6 +45,7 @@ struct Scanout {
     rollback: Option<(Mode, render::DrmRendering, bool)>,
     surface: DrmSurface,
     confirmed_mode: Mode,
+    streaming_restore: tehuti::output_mode::Temporary<Mode>,
     remaining_modes: std::collections::VecDeque<Mode>,
     listed_modes: Vec<Mode>,
     output: Output,
@@ -628,6 +629,23 @@ impl tehuti::frame_recovery::Frames<LoopData> for Tty {
         if self.rescan_pending {
             self.rescan(data);
         }
+        if self.scanout.as_ref().is_none_or(|scanout| !scanout.pending)
+            && let Some(mut control) = data.control.take()
+        {
+            control.poll(|command| {
+                if let tehuti::ctl::Command::DisplayMode { mode } = command {
+                    let request = tehuti::output_mode::Request::parse(&mode).ok_or("invalid output mode")?;
+                    self.scanout
+                        .as_mut()
+                        .ok_or("no active output")?
+                        .external_request(&self.device, request, data)?;
+                    Ok(serde_json::json!({}))
+                } else {
+                    data.compositor.control(command, &data.control_directory)
+                }
+            });
+            data.control = Some(control);
+        }
         match &mut self.scanout {
             Some(scanout) => scanout.render(&self.device, data, tick),
             None => Ok(None),
@@ -646,6 +664,7 @@ impl Scanout {
     ) -> Self {
         Self {
             confirmed_mode: surface.pending_mode(),
+            streaming_restore: tehuti::output_mode::Temporary::default(),
             surface,
             renderer,
             remaining_modes,
@@ -689,7 +708,7 @@ impl Scanout {
             let result = tehuti::frame_recovery::switch_or_restore(
                 &mut (&mut *self, &mut *data),
                 confirmed,
-                |(scanout, data)| scanout.switch_settings_mode(device, mode, index, data),
+                |(scanout, data)| scanout.switch_settings_mode(device, mode, Some(index), data),
                 |(scanout, data), confirmed| {
                     scanout.restore_mode(device, confirmed, data);
                     scanout.modeset = true;
@@ -703,11 +722,56 @@ impl Scanout {
         }
     }
 
+    fn external_request(
+        &mut self,
+        device: &DrmDevice,
+        request: tehuti::output_mode::Request,
+        data: &mut LoopData,
+    ) -> Result<(), String> {
+        if self.pending {
+            return Err("output frame pending; retry the command".to_owned());
+        }
+        if self.preview.is_some() {
+            return Err("finish the display settings preview first".to_owned());
+        }
+        let previous = self.surface.current_mode();
+        let target = match request {
+            tehuti::output_mode::Request::Restore => None,
+            tehuti::output_mode::Request::Set { .. } => {
+                let modes: Vec<_> = self
+                    .listed_modes
+                    .iter()
+                    .map(|mode| (mode.size().0, mode.size().1, mode.vrefresh()))
+                    .collect();
+                Some(
+                    request
+                        .closest(&modes)
+                        .and_then(|index| self.listed_modes.get(index))
+                        .copied()
+                        .ok_or_else(|| "no supported output modes".to_owned())?,
+                )
+            }
+        };
+        let mut streaming = core::mem::take(&mut self.streaming_restore);
+        let result = streaming.apply(previous, target, |target| {
+            if let Err(error) = self.switch_settings_mode(device, target, None, data) {
+                self.restore_mode(device, previous, data);
+                self.modeset = true;
+                return Err(error.to_string());
+            }
+            self.preview = None;
+            self.confirmed_mode = target;
+            Ok(())
+        });
+        self.streaming_restore = streaming;
+        result
+    }
+
     fn switch_settings_mode(
         &mut self,
         device: &DrmDevice,
         mode: Mode,
-        index: usize,
+        index: Option<usize>,
         data: &mut LoopData,
     ) -> Result<(), Box<dyn Error>> {
         let previous = self.surface.current_mode();
@@ -741,7 +805,9 @@ impl Scanout {
                 if !reverting {
                     self.preview = retained;
                 }
-                data.compositor.display_mode_applied(Some(index));
+                if let Some(index) = index {
+                    data.compositor.display_mode_applied(Some(index));
+                }
             }
             Err(error) => {
                 self.rollback = retained;

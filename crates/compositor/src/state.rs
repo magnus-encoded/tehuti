@@ -146,6 +146,8 @@ pub struct Compositor {
     injected_clock: Option<InjectedClock>,
     driver_clock: crate::driver::Clock,
     driver_elapsed: core::time::Duration,
+    control_events: std::collections::VecDeque<serde_json::Value>,
+    control_sequence: u64,
     dim_elapsed: core::time::Duration,
     focus_outline_ids: [smithay::backend::renderer::element::Id; 4],
     step_mark_ids: [smithay::backend::renderer::element::Id; 4],
@@ -316,6 +318,8 @@ impl Compositor {
             injected_clock: None,
             driver_clock: crate::driver::Clock::Live,
             driver_elapsed: core::time::Duration::ZERO,
+            control_events: std::collections::VecDeque::new(),
+            control_sequence: 0,
             previous_tick: Instant::now(),
             dim_elapsed: core::time::Duration::ZERO,
             focus_outline_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
@@ -1435,6 +1439,11 @@ impl Compositor {
     }
 
     pub fn sample_sticks(&mut self, sticks: tehuti_core::dispatch::Sticks) {
+        if sticks != tehuti_core::dispatch::Sticks::default() {
+            self.push_control_event(
+                serde_json::json!({"kind": "sticks", "left": sticks.left, "right": sticks.right}),
+            );
+        }
         let _rejection = self.dispatch(DispatchInput::Sticks(sticks));
     }
 
@@ -1566,6 +1575,7 @@ impl Compositor {
 
     /// Runs one event through the core dispatch step and carries out its effects.
     pub fn handle(&mut self, event: &Event) {
+        self.observe_control_event(event);
         self.settle_restored_focus();
         self.prepare_button_event(event);
         if matches!(
@@ -5127,3 +5137,6 @@ mod tests {
         assert!(compositor.take_release_request().is_some());
     }
 }
+
+#[path = "ctl_state.rs"]
+mod control;

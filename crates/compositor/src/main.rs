@@ -52,6 +52,9 @@ pub(crate) struct LoopData {
     applications_watch: Option<tehuti::applications_watch::ApplicationsWatch>,
     menu_watch: Option<tehuti::menu_watch::MenuWatch>,
     driver: Option<tehuti::driver::Driver>,
+    control: Option<tehuti::ctl::Server>,
+    control_directory: PathBuf,
+    control_mode: tehuti::output_mode::Temporary<smithay::output::Mode>,
     frames: Frames,
 }
 
@@ -292,6 +295,10 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         let _flag = arguments.next();
     }
     let (context_directory, program, application) = match tehuti::cli::parse(arguments) {
+        Ok(tehuti::cli::Invocation::Ctl(arguments)) => {
+            tehuti::ctl_cli::stdout(arguments)?;
+            return Ok(ExitCode::SUCCESS);
+        }
         Ok(tehuti::cli::Invocation::Help) => return print_usage(),
         Ok(tehuti::cli::Invocation::Version) => return print_version(),
         Ok(tehuti::cli::Invocation::CheckConfig(rest)) => return check_config(rest.into_iter()),
@@ -513,6 +520,15 @@ fn start_session(
             pad_reads_without_input: 0,
             report: tehuti::pacing::Interval::new(tehuti::pacing::STATISTICS_PERIOD),
         },
+        control: match tehuti::ctl::socket_path().and_then(tehuti::ctl::Server::bind) {
+            Ok(server) => Some(server),
+            Err(error) => {
+                warn!(%error, "session control unavailable");
+                None
+            }
+        },
+        control_directory: PathBuf::from(context_directory),
+        control_mode: tehuti::output_mode::Temporary::default(),
         driver,
         frames: if headless {
             Frames::Headless
@@ -667,6 +683,9 @@ fn run(
     let result = event_loop.run(Some(tehuti::pacing::LOOP_TIMEOUT), data, |data| {
         heartbeat.iter().for_each(tehuti::watchdog::Heartbeat::beat);
         termination.stop_if_requested(&signal);
+        if data.driver.is_some() {
+            poll_nested_control(data);
+        }
         if let Some(driver) = data.driver.as_mut() {
             driver.poll(&mut data.compositor);
             if driver.stopped() {
@@ -1384,5 +1403,46 @@ restart = { restart = true }",
     #[test]
     fn external_shutdown_exits_successfully() {
         assert_eq!(exit_code(false, false, false), std::process::ExitCode::SUCCESS);
+    }
+}
+
+fn poll_nested_control(data: &mut LoopData) {
+    if let Some(mut control) = data.control.take() {
+        control.poll(|command| {
+            if let tehuti::ctl::Command::DisplayMode { mode } = command {
+                let request = tehuti::output_mode::Request::parse(&mode).ok_or("invalid output mode")?;
+                let output = data.compositor.output.clone().ok_or("no active output")?;
+                let current = output.current_mode().ok_or("no output mode")?;
+                let modes = output.modes();
+                let candidates: Vec<_> = modes
+                    .iter()
+                    .filter_map(|mode| {
+                        Some((
+                            u16::try_from(mode.size.w).ok()?,
+                            u16::try_from(mode.size.h).ok()?,
+                            u32::try_from(mode.refresh).ok()?.checked_div(1000)?,
+                        ))
+                    })
+                    .collect();
+                let target = match request {
+                    tehuti::output_mode::Request::Restore => None,
+                    tehuti::output_mode::Request::Set { .. } => Some(
+                        *request
+                            .closest(&candidates)
+                            .and_then(|index| modes.get(index))
+                            .ok_or("no supported output modes")?,
+                    ),
+                };
+                data.control_mode.apply(current, target, |mode| {
+                    output.change_current_state(Some(mode), None, None, None);
+                    data.compositor.fill_output();
+                    Ok::<_, String>(())
+                })?;
+                Ok(serde_json::json!({}))
+            } else {
+                data.compositor.control(command, &data.control_directory)
+            }
+        });
+        data.control = Some(control);
     }
 }
