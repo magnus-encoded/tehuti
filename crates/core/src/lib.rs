@@ -770,7 +770,11 @@ fn talk_or_invoke(state: &State, event: &Event, plugin_active: bool) -> Option<V
             name,
             state: button_state,
         } if matches!(
-            ownership::owner(&state.ownership_view(plugin_active), *name, (*button_state).into()),
+            ownership::owner(
+                &state.ownership_view(plugin_active),
+                *name,
+                (*button_state).into()
+            ),
             ownership::Owner::Talk(_)
         ) =>
         {
@@ -783,7 +787,12 @@ fn talk_or_invoke(state: &State, event: &Event, plugin_active: bool) -> Option<V
         .into_iter()
         .flatten()
         .flat_map(|context| context.invoke_words().iter().map(String::as_str))
-        .chain(state.plugin_invoke_words.iter().flat_map(|(_, words)| words.iter().map(String::as_str)));
+        .chain(
+            state
+                .plugin_invoke_words
+                .iter()
+                .flat_map(|(_, words)| words.iter().map(String::as_str)),
+        );
     let typed = invoke::slash_command(transcript.as_str(), known)?;
     tehuti_protocol::Text::new(typed)
         .ok()
