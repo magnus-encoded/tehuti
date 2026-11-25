@@ -300,6 +300,7 @@ const fn shadowing_reason(why: Why) -> &'static str {
         Why::GlobalEnter => "the global layer sends Enter for South unless a focused context maps it",
         Why::PushToTalk => "it is in the global context's push_to_talk list (default record)",
         Why::GuideDpadChord
+        | Why::GuideSoundChord
         | Why::ChordStart
         | Why::SystemMenu
         | Why::MenuRelease

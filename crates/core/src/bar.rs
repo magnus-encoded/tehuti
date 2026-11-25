@@ -59,6 +59,8 @@ pub struct Bar {
     feedback: Option<Segment>,
     status: Option<String>,
     recording: bool,
+    muted: bool,
+    mic_muted: bool,
     navigation: Option<Segment>,
     remaining: Option<Duration>,
     level: crate::Level,
@@ -144,6 +146,8 @@ impl Bar {
             feedback: None,
             status: None,
             recording: false,
+            muted: false,
+            mic_muted: false,
             navigation: None,
             remaining: None,
             level: crate::Level::App,
@@ -276,6 +280,18 @@ impl Bar {
                 tone: Tone::Error,
             });
         }
+        if self.muted {
+            segments.push(Segment {
+                text: crate::sound::SoundCommand::mute_signpost(true).into(),
+                tone: Tone::Error,
+            });
+        }
+        if self.mic_muted {
+            segments.push(Segment {
+                text: crate::sound::SoundCommand::microphone_signpost(true).into(),
+                tone: Tone::Error,
+            });
+        }
         segments.extend(self.feedback.clone());
         segments.extend(self.navigation.clone());
         segments
@@ -286,6 +302,62 @@ impl Bar {
     pub const fn with_recording(mut self, recording: bool) -> Self {
         self.recording = recording;
         self
+    }
+
+    /// Whether speaker mute is shown on the bar.
+    #[must_use]
+    pub const fn muted(&self) -> bool {
+        self.muted
+    }
+
+    /// Whether microphone mute is shown on the bar.
+    #[must_use]
+    pub const fn mic_muted(&self) -> bool {
+        self.mic_muted
+    }
+
+    /// Keeps the speaker mute indicator visible at every navigation level.
+    #[must_use]
+    pub const fn with_muted(mut self, muted: bool) -> Self {
+        self.muted = muted;
+        self
+    }
+
+    /// Keeps the microphone mute indicator visible at every navigation level.
+    #[must_use]
+    pub const fn with_mic_muted(mut self, muted: bool) -> Self {
+        self.mic_muted = muted;
+        self
+    }
+
+    pub(crate) fn set_muted(&mut self, muted: bool) {
+        self.muted = muted;
+        self.generation = self.generation.saturating_add(1);
+        if muted {
+            self.feedback = None;
+            self.remaining = None;
+        } else {
+            self.result(crate::sound::SoundCommand::mute_signpost(false), Tone::Result);
+        }
+    }
+
+    pub(crate) fn set_mic_muted(&mut self, muted: bool) {
+        self.mic_muted = muted;
+        self.generation = self.generation.saturating_add(1);
+        if muted {
+            self.feedback = None;
+            self.remaining = None;
+        } else {
+            self.result(
+                crate::sound::SoundCommand::microphone_signpost(false),
+                Tone::Result,
+            );
+        }
+    }
+
+    pub(crate) fn sound_feedback(&mut self, text: &str, error: bool) {
+        self.generation = self.generation.saturating_add(1);
+        self.result(text, if error { Tone::Error } else { Tone::Result });
     }
 
     /// Shows a plugin's status text at app level.

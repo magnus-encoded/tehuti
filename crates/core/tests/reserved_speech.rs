@@ -12,6 +12,11 @@ mod reserved_speech {
             "work on notes",
             "Start recording.",
             "STOP RECORDING!",
+            "Mute.",
+            "Unmute!",
+            "Microphone mute.",
+            "Microphone on",
+            "Speaker headphones.",
         ] {
             let (_, actions) = tehuti_core::step(
                 tehuti_core::State::default(),

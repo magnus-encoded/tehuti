@@ -8,16 +8,30 @@ use std::{
     time::Instant,
 };
 
-#[derive(Debug, Clone, Copy)]
+use tehuti_core::sound::{AudioOutput, match_output, next_output};
+
+const DEFAULT_SINK: &str = "@DEFAULT_AUDIO_SINK@";
+const DEFAULT_SOURCE: &str = "@DEFAULT_AUDIO_SOURCE@";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Request {
     Read,
     Set(u8),
+    SetMute(bool),
+    ToggleMute,
+    SetMicrophoneMute(bool),
+    ToggleMicrophoneMute,
+    NextOutput,
+    SelectOutput(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Read(Result<u8, String>),
     Set(Result<(), String>),
+    Mute(Result<bool, String>),
+    MicrophoneMute(Result<bool, String>),
+    OutputSelected(Result<AudioOutput, String>),
 }
 
 #[derive(Debug)]
@@ -42,20 +56,7 @@ impl Backend {
         let (output, replies) = mpsc::channel();
         let _worker = std::thread::Builder::new().name("volume".into()).spawn(move || {
             while let Ok(request) = input.recv() {
-                let reply = match request {
-                    Request::Read => Reply::Read(
-                        run(&["get-volume".into(), "@DEFAULT_AUDIO_SINK@".into()])
-                            .and_then(|text| parse_volume(&text)),
-                    ),
-                    Request::Set(value) => Reply::Set(
-                        run(&[
-                            "set-volume".into(),
-                            "@DEFAULT_AUDIO_SINK@".into(),
-                            format!("{}%", value.min(100)),
-                        ])
-                        .map(|_| ()),
-                    ),
-                };
+                let reply = handle_request(&mut run, request);
                 if output.send(reply).is_err() {
                     break;
                 }
@@ -73,6 +74,57 @@ impl Backend {
     pub fn poll(&self) -> impl Iterator<Item = Reply> + '_ {
         self.replies.try_iter()
     }
+}
+
+fn handle_request(run: &mut impl FnMut(&[String]) -> Result<String, String>, request: Request) -> Reply {
+    match request {
+        Request::Read => {
+            Reply::Read(run(&["get-volume".into(), DEFAULT_SINK.into()]).and_then(|text| parse_volume(&text)))
+        }
+        Request::Set(value) => Reply::Set(
+            run(&[
+                "set-volume".into(),
+                DEFAULT_SINK.into(),
+                format!("{}%", value.min(100)),
+            ])
+            .map(|_| ()),
+        ),
+        Request::SetMute(muted) => Reply::Mute(set_mute(run, DEFAULT_SINK, if muted { "1" } else { "0" })),
+        Request::ToggleMute => Reply::Mute(set_mute(run, DEFAULT_SINK, "toggle")),
+        Request::SetMicrophoneMute(muted) => {
+            Reply::MicrophoneMute(set_mute(run, DEFAULT_SOURCE, if muted { "1" } else { "0" }))
+        }
+        Request::ToggleMicrophoneMute => Reply::MicrophoneMute(set_mute(run, DEFAULT_SOURCE, "toggle")),
+        Request::NextOutput => Reply::OutputSelected(switch_output(run, None)),
+        Request::SelectOutput(query) => Reply::OutputSelected(switch_output(run, Some(&query))),
+    }
+}
+
+fn set_mute(
+    run: &mut impl FnMut(&[String]) -> Result<String, String>,
+    target: &str,
+    mode: &str,
+) -> Result<bool, String> {
+    let _applied = run(&["set-mute".into(), target.into(), mode.into()])?;
+    let reply = run(&["get-volume".into(), target.into()])?;
+    parse_muted(&reply)
+}
+
+fn switch_output(
+    run: &mut impl FnMut(&[String]) -> Result<String, String>,
+    query: Option<&str>,
+) -> Result<AudioOutput, String> {
+    let status = run(&["status".into()])?;
+    let sinks = parse_sinks(&status);
+    let chosen = match query {
+        Some(name) => match_output(&sinks, name).ok_or_else(|| "No matching speaker".to_owned())?,
+        None => next_output(&sinks).ok_or_else(|| "No audio output".to_owned())?,
+    };
+    let _applied = run(&["set-default".into(), chosen.id.to_string()])?;
+    Ok(AudioOutput {
+        default: true,
+        ..chosen.clone()
+    })
 }
 
 fn command(args: &[String]) -> Result<String, String> {
@@ -129,4 +181,64 @@ fn parse_volume(text: &str) -> Result<u8, String> {
         .parse()
         .map_err(|_| "invalid volume precision")?;
     Ok(u8::try_from(whole.saturating_mul(100).saturating_add(percent).min(100)).unwrap_or(100))
+}
+
+fn parse_muted(text: &str) -> Result<bool, String> {
+    let _volume = parse_volume(text)?;
+    Ok(text.split_whitespace().any(|token| token == "[MUTED]"))
+}
+
+/// Parses the `Audio` -> `Sinks:` section of `wpctl status` output.
+#[must_use]
+pub fn parse_sinks(text: &str) -> Vec<AudioOutput> {
+    let mut in_audio = false;
+    let mut in_sinks = false;
+    let mut sinks = Vec::new();
+    for raw_line in text.lines() {
+        if raw_line.starts_with(|character: char| character.is_ascii_alphabetic()) {
+            in_audio = raw_line.trim() == "Audio";
+            in_sinks = false;
+            continue;
+        }
+        if !in_audio {
+            continue;
+        }
+        let content = raw_line
+            .trim_start_matches(|character: char| {
+                character.is_whitespace() || matches!(character, '│' | '├' | '└' | '─' | '|' | '+' | '-')
+            })
+            .trim();
+        if content == "Sinks:" {
+            in_sinks = true;
+        } else if content.ends_with(':') {
+            in_sinks = false;
+        } else if in_sinks && let Some(sink) = parse_sink_line(content) {
+            sinks.push(sink);
+        }
+    }
+    sinks
+}
+
+fn parse_sink_line(content: &str) -> Option<AudioOutput> {
+    let (default, rest) = content
+        .strip_prefix('*')
+        .map_or((false, content), |after| (true, after.trim_start()));
+    let (id_text, after_dot) = rest.split_once('.')?;
+    let id = id_text.trim().parse::<u32>().ok()?;
+    let name = strip_volume_suffix(after_dot).trim();
+    (!name.is_empty()).then(|| AudioOutput {
+        id,
+        name: name.into(),
+        default,
+    })
+}
+
+fn strip_volume_suffix(text: &str) -> &str {
+    let trimmed = text.trim_end();
+    if trimmed.ends_with(']')
+        && let Some((head, _tail)) = trimmed.rsplit_once("[vol:")
+    {
+        return head;
+    }
+    trimmed
 }

@@ -62,6 +62,9 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::ClockRead(elapsed) => *elapsed,
         DispatchInput::Menu(_)
         | DispatchInput::Volume(_)
+        | DispatchInput::AudioMuted(_)
+        | DispatchInput::MicrophoneMuted(_)
+        | DispatchInput::AudioOutputSelected(_)
         | DispatchInput::WindowSize(_)
         | DispatchInput::Adjusters(_)
         | DispatchInput::Launcher(_)
@@ -1114,7 +1117,7 @@ impl Compositor {
         let local_guide = button == tehuti_protocol::ButtonName::Guide && !guide_forwarded;
         // Start pressed while Guide is held belongs to the escape chord in every mode, and so does its release.
         let chord_start = match owner {
-            Some(Owner::Tehuti(Why::ChordStart)) => {
+            Some(Owner::Tehuti(Why::ChordStart | Why::GuideSoundChord)) => {
                 if !chorded {
                     self.chord_buttons.push(button);
                 }
@@ -2309,6 +2312,12 @@ impl Compositor {
             | DispatchEffect::OpenLauncher(_)
             | DispatchEffect::ReadVolume
             | DispatchEffect::SetVolume(_)
+            | DispatchEffect::SetMute(_)
+            | DispatchEffect::ToggleMute
+            | DispatchEffect::SetMicrophoneMute(_)
+            | DispatchEffect::ToggleMicrophoneMute
+            | DispatchEffect::NextAudioOutput
+            | DispatchEffect::SelectAudioOutput(_)
             | DispatchEffect::ReadWindowSize(_)
             | DispatchEffect::SetWindowSize { .. }
             | DispatchEffect::AdjusterValue { .. }
@@ -2568,6 +2577,18 @@ impl Compositor {
             }
             DispatchEffect::ReadVolume => self.volume_request(crate::volume::Request::Read),
             DispatchEffect::SetVolume(value) => self.volume_request(crate::volume::Request::Set(value)),
+            DispatchEffect::SetMute(muted) => self.volume_request(crate::volume::Request::SetMute(muted)),
+            DispatchEffect::ToggleMute => self.volume_request(crate::volume::Request::ToggleMute),
+            DispatchEffect::SetMicrophoneMute(muted) => {
+                self.volume_request(crate::volume::Request::SetMicrophoneMute(muted));
+            }
+            DispatchEffect::ToggleMicrophoneMute => {
+                self.volume_request(crate::volume::Request::ToggleMicrophoneMute);
+            }
+            DispatchEffect::NextAudioOutput => self.volume_request(crate::volume::Request::NextOutput),
+            DispatchEffect::SelectAudioOutput(query) => {
+                self.volume_request(crate::volume::Request::SelectOutput(query));
+            }
             DispatchEffect::ReadWindowSize(axis) => {
                 let size = axis.read(&self.placement.snapshot());
                 let _rejection = self.dispatch(DispatchInput::WindowSize(size));
@@ -4807,25 +4828,43 @@ fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
 }
 
 impl Compositor {
+    fn volume_unavailable(&mut self, request: &crate::volume::Request) {
+        let (input, notice) = match request {
+            crate::volume::Request::Read | crate::volume::Request::Set(_) => {
+                (DispatchInput::Volume(None), "VOLUME UNAVAILABLE")
+            }
+            crate::volume::Request::SetMute(_) | crate::volume::Request::ToggleMute => {
+                (DispatchInput::AudioMuted(None), "SOUND UNAVAILABLE")
+            }
+            crate::volume::Request::SetMicrophoneMute(_) | crate::volume::Request::ToggleMicrophoneMute => {
+                (DispatchInput::MicrophoneMuted(None), "SOUND UNAVAILABLE")
+            }
+            crate::volume::Request::NextOutput | crate::volume::Request::SelectOutput(_) => (
+                DispatchInput::AudioOutputSelected(Err("Sound unavailable".into())),
+                "SOUND UNAVAILABLE",
+            ),
+        };
+        let _rejection = self.dispatch(input);
+        self.show_notice(notice);
+    }
+
     fn volume_request(&mut self, request: crate::volume::Request) {
         if self.volume.is_none() {
             match crate::volume::Backend::start() {
                 Ok(backend) => self.volume = Some(backend),
                 Err(error) => {
                     tracing::warn!(%error, "audio worker unavailable");
-                    let _rejection = self.dispatch(DispatchInput::Volume(None));
-                    self.show_notice("VOLUME UNAVAILABLE");
+                    self.volume_unavailable(&request);
                     return;
                 }
             }
         }
         if let Some(backend) = &self.volume
-            && let Err(error) = backend.request(request)
+            && let Err(error) = backend.request(request.clone())
         {
             tracing::warn!(%error, "audio worker unavailable");
             self.volume = None;
-            let _rejection = self.dispatch(DispatchInput::Volume(None));
-            self.show_notice("VOLUME UNAVAILABLE");
+            self.volume_unavailable(&request);
         }
     }
 
@@ -4848,6 +4887,26 @@ impl Compositor {
                     self.show_notice("VOLUME UNAVAILABLE");
                 }
                 crate::volume::Reply::Set(Ok(())) => {}
+                crate::volume::Reply::Mute(result) => {
+                    if let Err(error) = &result {
+                        tracing::warn!(%error, "audio mute failed");
+                        self.show_notice("SOUND UNAVAILABLE");
+                    }
+                    let _rejection = self.dispatch(DispatchInput::AudioMuted(result.ok()));
+                }
+                crate::volume::Reply::MicrophoneMute(result) => {
+                    if let Err(error) = &result {
+                        tracing::warn!(%error, "microphone mute failed");
+                        self.show_notice("SOUND UNAVAILABLE");
+                    }
+                    let _rejection = self.dispatch(DispatchInput::MicrophoneMuted(result.ok()));
+                }
+                crate::volume::Reply::OutputSelected(result) => {
+                    if let Err(error) = &result {
+                        tracing::warn!(%error, "audio output switch failed");
+                    }
+                    let _rejection = self.dispatch(DispatchInput::AudioOutputSelected(result));
+                }
             }
         }
     }
