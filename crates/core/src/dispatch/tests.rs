@@ -6589,7 +6589,7 @@ fn passthrough_talk_ownership_matches_dispatch_on_press_and_release() {
                 state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
             }
             world.trace.clear();
-            for (phase, button_state, command) in [
+            for (phase, button_state, expected_command) in [
                 (
                     Phase::Pressed,
                     ButtonState::Pressed,
@@ -6620,7 +6620,7 @@ fn passthrough_talk_ownership_matches_dispatch_on_press_and_release() {
                         }
                     })
                     .collect();
-                assert_eq!(commands, [command]);
+                assert_eq!(commands, [expected_command]);
                 assert!(
                     !world
                         .trace

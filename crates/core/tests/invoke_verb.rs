@@ -125,8 +125,8 @@ mod invoke_verb {
         assert_eq!(state.plugin_invoke_words(), ["code-review"]);
         let (state, cleared) = step(state, &speech("invoke usage raport"));
         assert_eq!(cleared, typed("/usage-raport "));
-        let (_, other) = step(state, &speech("invoke code review"));
-        assert_eq!(other, typed("/code-review "));
+        let (_, after_clear) = step(state, &speech("invoke code review"));
+        assert_eq!(after_clear, typed("/code-review "));
     }
 
     #[test]
