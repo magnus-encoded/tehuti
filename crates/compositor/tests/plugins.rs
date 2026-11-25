@@ -1070,6 +1070,105 @@ for line in sys.stdin:
             .any(|segment| segment.text == "Ada pending")
     }
 
+    fn reply_state_harness() -> Harness {
+        let mut configuration = manifest();
+        configuration.kind = tehuti_protocol::PluginKind::Verb;
+        configuration.verbs = vec!["worker".into()];
+        configuration.app_ids.clear();
+        configuration.events = vec![Subscription::Speech];
+        configuration.permissions.clear();
+        let mut harness =
+            Harness::with_script(&configuration, include_str!("fixtures/plugins/reply-state.py"));
+        harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1);
+        harness
+    }
+
+    fn work_pending(harness: &Harness) -> bool {
+        harness
+            .compositor
+            .voice_bar()
+            .segments()
+            .iter()
+            .any(|segment| segment.text == "Work pending")
+    }
+
+    fn reply_command(harness: &mut Harness, command: &str) {
+        let processed = || {
+            std::fs::read_to_string(harness.directory.path().join("processed"))
+                .unwrap_or_default()
+                .lines()
+                .count()
+        };
+        let expected = processed().saturating_add(1);
+        harness.send([speech(&format!("worker {command}"))]);
+        harness.pump_until(|harness| {
+            std::fs::read_to_string(harness.directory.path().join("processed"))
+                .unwrap_or_default()
+                .lines()
+                .count()
+                == expected
+        });
+        settle(harness);
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(24))]
+
+        #[test]
+        fn reply_notices_and_pending_chips_follow_independent_lifetimes(
+            operations in prop::collection::vec(0_u8..6, 1..6),
+        ) {
+            let mut harness = reply_state_harness();
+            let mut pending = false;
+            let mut noticed = false;
+            for operation in operations {
+                match operation {
+                    0 => {
+                        reply_command(&mut harness, "set");
+                        pending = true;
+                    }
+                    1 => {
+                        reply_command(&mut harness, "clear");
+                        pending = false;
+                    }
+                    2 => {
+                        reply_command(&mut harness, "notice");
+                        noticed = true;
+                    }
+                    3 => reply_command(&mut harness, "malformed"),
+                    4 => harness.send([focus("other")]),
+                    _ => harness.send([Event::Focus {
+                        app_id: None,
+                        title: String::new(),
+                    }]),
+                }
+                prop_assert_eq!(work_pending(&harness), pending);
+                prop_assert_eq!(
+                    harness.compositor.visible_notice().map(|(_, text)| text),
+                    noticed.then(|| String::from("Work complete")),
+                );
+                prop_assert!(!harness.compositor.quit_requested());
+            }
+        }
+    }
+
+    #[test]
+    fn a_failed_verb_plugin_cannot_leave_a_pending_chip_after_restart() {
+        for failure in ["crash", "flood", "malformed_burst"] {
+            let mut harness = reply_state_harness();
+            reply_command(&mut harness, "set");
+            assert!(work_pending(&harness));
+            harness.send([speech(&format!("worker {failure}"))]);
+            harness.pump_until(|harness| harness.compositor.initialized_plugins() == 0);
+            assert!(!work_pending(&harness));
+            harness.pump_until(|harness| harness.compositor.initialized_plugins() == 1);
+            assert!(!work_pending(&harness));
+            reply_command(&mut harness, "notice");
+            assert_eq!(harness.compositor.visible_notice().unwrap().1, "Work complete");
+            assert!(!work_pending(&harness));
+        }
+    }
+
     fn verb_harness(verbs: &[&str], accept: bool) -> Harness {
         let mut configuration = manifest();
         configuration.kind = tehuti_protocol::PluginKind::Verb;
