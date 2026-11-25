@@ -1922,6 +1922,14 @@ fn launcher_step(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
 
 fn choice_list_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
     let Event::Button { name, state: button } = event else {
+        if let Event::Speech { text } = event
+            && !state.capture.commands.is_empty()
+            && crate::tool_words::tool_word(text.as_str()).is_some()
+        {
+            state.capture.commands.clear();
+            state.choice_list = None;
+            return false;
+        }
         return state.choice_list_open() && matches!(event, Event::Speech { .. });
     };
     if !state.choice_list_open() {

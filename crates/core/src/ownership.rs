@@ -1101,7 +1101,10 @@ mod tests {
         assert!(pressed.hides_from_pad(false));
         let (app_guide, _) = crate::step(
             State::with_contexts(vec![
-                parse_context("app_id = 'app'\n[buttons]\n[pad]\npassthrough = true\nguide = 'app'").unwrap(),
+                parse_context(
+                    "app_id = 'app'\n[buttons]\n[pad]\npassthrough = true\nvirtual = true\nguide = 'app'",
+                )
+                .unwrap(),
             ]),
             &Event::Focus {
                 app_id: Some("app".into()),

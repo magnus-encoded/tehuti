@@ -729,6 +729,9 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         let _command = menu_input(&mut state, event);
         return (state, Vec::new(), false);
     }
+    if is_talk_button(&state, event, plugin_active) {
+        return (state, Vec::new(), false);
+    }
     if let Some(actions) = shoulder_level(&state, event) {
         return (state, actions, false);
     }
@@ -749,7 +752,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
         return (state, actions, false);
     }
-    if let Some(actions) = talk_or_invoke(&state, event, plugin_active) {
+    if let Some(actions) = invoke_speech(&state, event) {
         return (state, actions, false);
     }
     if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
@@ -765,27 +768,29 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     (state, actions, false)
 }
 
-/// A push-to-talk press does nothing more. Speech meets the built-in `invoke` verb
-/// ahead of plugin verbs and context phrases; its words snap to the focused and
-/// global contexts' invoke words.
-fn talk_or_invoke(state: &State, event: &Event, plugin_active: bool) -> Option<Vec<Action>> {
-    let transcript = match event {
-        Event::Button {
-            name,
-            state: button_state,
-        } if matches!(
-            ownership::owner(
-                &state.ownership_view(plugin_active),
-                *name,
-                (*button_state).into()
-            ),
-            ownership::Owner::Talk(_)
-        ) =>
-        {
-            return Some(Vec::new());
-        }
-        Event::Speech { text } => text,
-        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => return None,
+fn is_talk_button(state: &State, event: &Event, plugin_active: bool) -> bool {
+    let Event::Button {
+        name,
+        state: button_state,
+    } = event
+    else {
+        return false;
+    };
+    matches!(
+        ownership::owner(
+            &state.ownership_view(plugin_active),
+            *name,
+            (*button_state).into()
+        ),
+        ownership::Owner::Talk(_)
+    )
+}
+
+/// Speech meets the built-in `invoke` verb ahead of plugin verbs and context phrases;
+/// its words snap to the focused and global contexts' invoke words.
+fn invoke_speech(state: &State, event: &Event) -> Option<Vec<Action>> {
+    let Event::Speech { text: transcript } = event else {
+        return None;
     };
     let known = [focused_context(state), global_context(state)]
         .into_iter()
