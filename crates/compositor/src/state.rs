@@ -4828,8 +4828,8 @@ fn log_transcript(session: u64, text: &tehuti_protocol::Text, admitted: bool) {
 }
 
 impl Compositor {
-    fn volume_unavailable(&mut self, request: &crate::volume::Request) {
-        let (input, notice) = match request {
+    fn volume_failure(request: &crate::volume::Request) -> (DispatchInput, &'static str) {
+        match request {
             crate::volume::Request::Read | crate::volume::Request::Set(_) => {
                 (DispatchInput::Volume(None), "VOLUME UNAVAILABLE")
             }
@@ -4843,9 +4843,7 @@ impl Compositor {
                 DispatchInput::AudioOutputSelected(Err("Sound unavailable".into())),
                 "SOUND UNAVAILABLE",
             ),
-        };
-        let _rejection = self.dispatch(input);
-        self.show_notice(notice);
+        }
     }
 
     fn volume_request(&mut self, request: crate::volume::Request) {
@@ -4854,17 +4852,21 @@ impl Compositor {
                 Ok(backend) => self.volume = Some(backend),
                 Err(error) => {
                     tracing::warn!(%error, "audio worker unavailable");
-                    self.volume_unavailable(&request);
+                    let (input, notice) = Self::volume_failure(&request);
+                    let _rejection = self.dispatch(input);
+                    self.show_notice(notice);
                     return;
                 }
             }
         }
+        let (input, notice) = Self::volume_failure(&request);
         if let Some(backend) = &self.volume
-            && let Err(error) = backend.request(request.clone())
+            && let Err(error) = backend.request(request)
         {
             tracing::warn!(%error, "audio worker unavailable");
             self.volume = None;
-            self.volume_unavailable(&request);
+            let _rejection = self.dispatch(input);
+            self.show_notice(notice);
         }
     }
 

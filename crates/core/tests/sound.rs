@@ -352,7 +352,7 @@ mod tests {
                 default: true,
             };
             let parsed = SoundCommand::parse(&sink.signpost());
-            prop_assert_eq!(parsed.clone(), Some(SoundCommand::SelectOutput(sink.spoken_name())));
+            prop_assert_eq!(parsed, Some(SoundCommand::SelectOutput(sink.spoken_name())));
             if let Some(SoundCommand::SelectOutput(query)) = parsed {
                 prop_assert_eq!(match_output(core::slice::from_ref(&sink), &query), Some(&sink));
             }
