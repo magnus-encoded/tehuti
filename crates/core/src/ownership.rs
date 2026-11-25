@@ -221,16 +221,6 @@ impl OwnershipView {
         }
     }
 
-    fn tehuti_after_talk(&self, button: ButtonName) -> Option<Owner> {
-        if self.menu_release(button) {
-            Some(Owner::Tehuti(Why::MenuRelease))
-        } else if self.dpad_chord(button) {
-            Some(Owner::Tehuti(Why::GuideDpadChord))
-        } else {
-            None
-        }
-    }
-
     fn maps(&self, button: ButtonName) -> Option<Scope> {
         if self.focused_maps.contains(&button) {
             Some(Scope::Active)
@@ -295,7 +285,7 @@ impl OwnershipView {
 /// Who gets `button` in `phase` right now.
 ///
 /// Precedence, highest first. Without passthrough: Guide, the Start chord, the open system
-/// menu, push-to-talk, a menu release, the Guide d-pad chord, the columns level, then the
+/// menu, the Guide d-pad chord, push-to-talk, a menu release, the columns level, then the
 /// route layers (global Confirm, stick modifier, held key, plugin, mapping, dropped). With
 /// passthrough the chord layers come before push-to-talk and everything else goes to the app.
 #[must_use]
@@ -306,11 +296,15 @@ pub fn owner(view: &OwnershipView, button: ButtonName, phase: Phase) -> Owner {
     if let Some(owner) = view.tehuti_first(button, phase) {
         return owner;
     }
+    // Outside passthrough the Guide d-pad chord outranks push-to-talk, as `route` and dispatch do.
+    if view.dpad_chord(button) {
+        return Owner::Tehuti(Why::GuideDpadChord);
+    }
     if view.talks(button) {
         return Owner::Talk(view.talk_source);
     }
-    if let Some(owner) = view.tehuti_after_talk(button) {
-        return owner;
+    if view.menu_release(button) {
+        return Owner::Tehuti(Why::MenuRelease);
     }
     if view.level == Level::Columns && matches!(button, ButtonName::LeftBumper | ButtonName::RightBumper) {
         return Owner::Level;
@@ -615,6 +609,7 @@ mod tests {
                 && view.talks(button)
                 && button != ButtonName::Guide
                 && !view.start_chord(button, phase)
+                && !view.dpad_chord(button)
             {
                 prop_assert_eq!(got, Owner::Talk(view.talk_source));
             }
