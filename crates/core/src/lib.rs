@@ -801,14 +801,14 @@ fn talk_or_invoke(state: &State, event: &Event, plugin_active: bool) -> Option<V
 
 const NO_MAPPING_NOTICE: &str = "NO SPEECH MAPPING";
 
-/// The mapped phrases a model may choose from for a phrase that matches nothing.
+/// Whether a phrase maps to nothing in the focused or global context, so it
+/// dictates or shows the no-mapping notice.
 ///
-/// These are the focused and global contexts' phrases, once each. `None` when a
-/// mapping, built-in or fuzzy match takes the phrase.
+/// A mapping, built-in or fuzzy match takes the phrase; an empty phrase is no utterance.
 #[must_use]
-pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<String>> {
+pub fn speech_falls_through(state: &State, phrase: &str) -> bool {
     if phrase.trim().is_empty() {
-        return None;
+        return false;
     }
     let focused = focused_context(state);
     let global = global_context(state);
@@ -817,20 +817,32 @@ pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<Stri
         .flatten()
         .any(|context| maps_phrase(context, phrase))
     {
-        return None;
+        return false;
     }
-    let action = route_speech(focused, global, phrase)?;
-    let fell_through = if let Action::Notice { text } = &action {
+    let Some(action) = route_speech(focused, global, phrase) else {
+        return false;
+    };
+    if let Action::Notice { text } = &action {
         text.as_str() == NO_MAPPING_NOTICE
     } else {
         [focused, global]
             .into_iter()
             .flatten()
             .any(|context| context.unmatched_speech_action(phrase).as_ref() == Some(&action))
-    };
-    if !fell_through {
+    }
+}
+
+/// The mapped phrases a model may choose from for a phrase that matches nothing.
+///
+/// These are the focused and global contexts' phrases, once each. `None` when a
+/// mapping, built-in or fuzzy match takes the phrase.
+#[must_use]
+pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<String>> {
+    if !speech_falls_through(state, phrase) {
         return None;
     }
+    let focused = focused_context(state);
+    let global = global_context(state);
     let mut commands: Vec<String> = Vec::new();
     for context in [focused, global].into_iter().flatten() {
         for (_, candidate) in context.speech_candidates() {

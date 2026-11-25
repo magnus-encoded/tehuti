@@ -167,6 +167,7 @@ pub struct Compositor {
     context_files: Vec<(std::path::PathBuf, tehuti_protocol::Context)>,
     speech_context: Option<String>,
     speech_resolver: Option<crate::speech::resolver_worker::Link>,
+    modality_log: Option<crate::modality_log::SessionRecorder>,
     speech_title: String,
     warned_hotwords: crate::speech_vocabulary::OverCapWarned,
     launch_socket: Option<std::ffi::OsString>,
@@ -341,6 +342,7 @@ impl Compositor {
             launch_socket: None,
             speech_context: None,
             speech_resolver: None,
+            modality_log: None,
             speech_title: String::new(),
             warned_hotwords: crate::speech_vocabulary::OverCapWarned::default(),
             surfaces: CompositorState::new_v6::<Self>(display),
@@ -864,7 +866,93 @@ impl Compositor {
     }
 
     pub fn speech_input(&mut self, input: tehuti_core::speech::SpeechInput) {
-        let _rejection = self.dispatch(DispatchInput::Speech(input));
+        if let tehuti_core::speech::SpeechInput::Transcript { text, .. } = &input
+            && self.modality_log.is_some()
+        {
+            let outcome = self.speech_outcome(text.as_str());
+            let stamp = self.modality_stamp();
+            if let Some(log) = self.modality_log.as_mut() {
+                log.speech(outcome, self.speech_context.as_deref(), stamp);
+            }
+        }
+        self.recording_modality(crate::modality_log::Modality::Voice, |compositor| {
+            let _rejection = compositor.dispatch(DispatchInput::Speech(input));
+        });
+    }
+
+    fn speech_outcome(&self, text: &str) -> crate::modality_log::SpeechOutcome {
+        use crate::modality_log::SpeechOutcome;
+        if self.dispatch.keyboard().is_open() || self.dispatch.keyboard().password_field_active() {
+            SpeechOutcome::Dictated
+        } else if self.dispatch.speech_falls_through(text) {
+            SpeechOutcome::Unmatched
+        } else {
+            SpeechOutcome::Matched
+        }
+    }
+
+    /// Starts the modality log; every later action is recorded to it.
+    pub fn set_modality_log(&mut self, recorder: crate::modality_log::SessionRecorder) {
+        self.modality_log = Some(recorder);
+    }
+
+    /// Closes the modality log's session span, handing back its file.
+    pub fn end_modality_log(&mut self) -> Option<crate::modality_log::FileSink> {
+        let stamp = self.modality_stamp();
+        self.modality_log.take().map(|log| log.end(stamp))
+    }
+
+    fn modality_stamp(&self) -> crate::modality_log::Stamp {
+        crate::modality_log::Stamp {
+            elapsed: self.start_time.elapsed(),
+            unix_ms: crate::modality_log::unix_ms_now(),
+        }
+    }
+
+    fn surface_open(&self, surface: crate::modality_log::Surface) -> bool {
+        use crate::modality_log::Surface;
+        match surface {
+            Surface::Launcher => self.dispatch.launcher().is_some(),
+            Surface::SystemMenu => self.dispatch.core().menu().is_some(),
+            Surface::Keyboard => self.dispatch.keyboard().is_open(),
+            Surface::ChoiceList => {
+                self.dispatch.launcher().is_none() && self.dispatch.choice_list().is_some()
+            }
+        }
+    }
+
+    fn note_press(&mut self, modality: crate::modality_log::Modality) {
+        if self.modality_log.is_none() {
+            return;
+        }
+        let stamp = self.modality_stamp();
+        if let Some(log) = self.modality_log.as_mut() {
+            log.press(modality, self.speech_context.as_deref(), stamp);
+        }
+    }
+
+    /// Runs one input and records each surface it opened, credited to `modality`.
+    fn recording_modality<R>(
+        &mut self,
+        modality: crate::modality_log::Modality,
+        run: impl FnOnce(&mut Self) -> R,
+    ) -> R {
+        use crate::modality_log::Surface;
+        if self.modality_log.is_none() {
+            return run(self);
+        }
+        let before = Surface::ALL.map(|surface| self.surface_open(surface));
+        let result = run(self);
+        let after = Surface::ALL.map(|surface| self.surface_open(surface));
+        let stamp = self.modality_stamp();
+        if let Some(log) = self.modality_log.as_mut() {
+            for ((surface, was_open), is_open) in Surface::ALL.into_iter().zip(before).zip(after) {
+                if is_open && !was_open {
+                    log.surface_opened(surface, modality, self.speech_context.as_deref(), stamp);
+                }
+            }
+        }
+        result
     }
 
     /// Installs the speech resolver; unmatched transcripts then wait for its answer.
@@ -1273,6 +1361,23 @@ impl Compositor {
     }
 
     pub fn controller_input(&mut self, input: tehuti_core::controller::Input) {
+        use crate::modality_log::Modality;
+        let modality = if self.dispatch.keyboard().is_open() {
+            Modality::Osk
+        } else {
+            Modality::Pad
+        };
+        if let tehuti_core::controller::Input::Event(Event::Button {
+            state: tehuti_protocol::ButtonState::Pressed,
+            ..
+        }) = &input
+        {
+            self.note_press(modality);
+        }
+        self.recording_modality(modality, |compositor| compositor.route_controller_input(input));
+    }
+
+    fn route_controller_input(&mut self, input: tehuti_core::controller::Input) {
         if matches!(input, tehuti_core::controller::Input::Disconnected) {
             let _rejection = self.dispatch(DispatchInput::ControllerDisconnected);
         }
@@ -1327,8 +1432,14 @@ impl Compositor {
     }
 
     pub fn host_pointer_button(&mut self, button: tehuti_core::dispatch::PointerButton, pressed: bool) {
+        use crate::modality_log::Modality;
         if self.physical_pointer_enabled() {
-            self.pointer_click(button, pressed);
+            if pressed {
+                self.note_press(Modality::Pointer);
+            }
+            self.recording_modality(Modality::Pointer, |compositor| {
+                compositor.pointer_click(button, pressed);
+            });
         }
     }
 
@@ -3168,6 +3279,23 @@ impl Compositor {
             "key",
             &serde_json::json!({"keycode": keycode.raw(), "pressed": pressed}),
         );
+        if self.modality_log.is_some() {
+            let stamp = self.modality_stamp();
+            if let Some(log) = self.modality_log.as_mut() {
+                log.key(
+                    keycode.raw().saturating_sub(XKB_KEYCODE_OFFSET),
+                    pressed,
+                    self.speech_context.as_deref(),
+                    stamp,
+                );
+            }
+        }
+        self.recording_modality(crate::modality_log::Modality::Keyboard, |compositor| {
+            compositor.route_host_key(keycode, pressed);
+        });
+    }
+
+    fn route_host_key(&mut self, keycode: Keycode, pressed: bool) {
         if self.host_key_as_pad(keycode, pressed) {
             return;
         }
@@ -3350,6 +3478,9 @@ impl Compositor {
 
     /// Releases every held host and pad key, so a key held when the host window loses focus or the seat pauses does not stick.
     pub fn release_host_keys(&mut self) {
+        if let Some(log) = self.modality_log.as_mut() {
+            log.release_keys();
+        }
         self.held_pad_keys.clear();
         self.release_synthesised_pad_buttons();
         self.consumed_host_keys.clear();

@@ -22,3 +22,7 @@
 | Secret destination | One live Wayland surface during one focus generation; secret insertion checks it again after lookup. |
 | Launch | One child process Tehuti starts for the user: program, arguments, label and the app id its window carries. A specialised launch, such as a terminal with its own class, gets its own context through that app id. |
 | Launch owner | The single module (`launch`) that starts launches, tracks them until they exit or crash, and produces the notice when one closes right away. Tests use its fake spawner. |
+| Modality log | A local JSON Lines file under the state directory recording which input kind (keyboard, pad, voice, pointer, on-screen keyboard) carried each action, with key class and app id only, never typed text or transcripts. `off` in `~/.config/tehuti/modality-log` turns it off. |
+| Key class | What a hardware key press did without naming the key: text entry, shortcut, navigation, editing or function. |
+| Fallback | A keyboard action within ten seconds of a transcript that matched no command, with no matched transcript between. |
+| Keyboard report | `tehuti --keyboard-report` ranks the app and key class pairs from the modality log where the keyboard was still used. |

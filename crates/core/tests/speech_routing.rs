@@ -182,4 +182,27 @@ mod speech_routing {
             }
         }
     }
+
+    proptest! {
+        #[test]
+        fn a_phrase_falls_through_exactly_when_the_step_shows_the_no_mapping_notice(
+            mapped in "[a-z]{3,8}",
+            heard in "[a-z]{1,8}( [a-z]{1,8})?",
+        ) {
+            let context = parse_context(&format!(
+                "app_id = 'terminal'\n[buttons]\n[speech]\n{mapped} = {{ key = 'enter' }}"
+            ))
+            .unwrap();
+            let (state, _) = step(
+                State::with_contexts(vec![context]),
+                &Event::Focus { app_id: Some("terminal".into()), title: String::new() },
+            );
+            let falls_through = tehuti_core::speech_falls_through(&state, &heard);
+            let (_, actions) = step(state, &Event::Speech { text: Text::new(heard.clone()).unwrap() });
+            let notice = actions
+                .iter()
+                .any(|action| matches!(action, Action::Notice { text } if text.as_str() == "NO SPEECH MAPPING"));
+            prop_assert_eq!(falls_through, notice, "{} heard as {}: {:?}", mapped, heard, actions);
+        }
+    }
 }

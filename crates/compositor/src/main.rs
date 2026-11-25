@@ -246,6 +246,43 @@ fn install_skill(path: Option<std::ffi::OsString>) -> Result<ExitCode, Box<dyn E
     Ok(ExitCode::SUCCESS)
 }
 
+/// How many situations the keyboard report lists.
+const KEYBOARD_REPORT_TOP: usize = 20;
+
+fn keyboard_report(path: Option<std::ffi::OsString>) -> Result<ExitCode, Box<dyn Error>> {
+    use std::io::Write;
+    use tehuti::modality_log::{default_path, report};
+    let path = match path {
+        Some(path) => PathBuf::from(path),
+        None => default_path()?,
+    };
+    let (lines, skipped) = report::parse(&report::read_log(&path)?);
+    let text = report::render(&report::build(&lines, skipped), KEYBOARD_REPORT_TOP);
+    write!(std::io::stdout().lock(), "{text}")?;
+    Ok(ExitCode::SUCCESS)
+}
+
+/// Starts the modality log unless its switch file says `off`; a log that cannot open is skipped with a warning.
+fn start_modality_log(compositor: &mut Compositor) {
+    use tehuti::modality_log::{
+        FileSink, Recorder, Stamp, default_path, enabled, switch_from_env, unix_ms_now,
+    };
+    if !switch_from_env().is_ok_and(|switch| enabled(&switch)) {
+        info!("modality log is off");
+        return;
+    }
+    match default_path().and_then(|path| FileSink::open(path, FileSink::DEFAULT_CAP_BYTES)) {
+        Ok(sink) => compositor.set_modality_log(Recorder::start(
+            sink,
+            Stamp {
+                elapsed: compositor.start_time.elapsed(),
+                unix_ms: unix_ms_now(),
+            },
+        )),
+        Err(error) => warn!(%error, "modality log not started"),
+    }
+}
+
 fn insert_backend(
     event_loop: &EventLoop<'static, LoopData>,
     display: &smithay::reexports::wayland_server::DisplayHandle,
@@ -297,6 +334,7 @@ fn main() -> Result<ExitCode, Box<dyn Error>> {
         Ok(tehuti::cli::Invocation::CheckConfig(rest)) => return check_config(rest.into_iter()),
         Ok(tehuti::cli::Invocation::Config(rest)) => return config_command(&rest),
         Ok(tehuti::cli::Invocation::InstallSkill(path)) => return install_skill(path),
+        Ok(tehuti::cli::Invocation::KeyboardReport(path)) => return keyboard_report(path),
         Ok(tehuti::cli::Invocation::Session {
             context_directory,
             application,
@@ -404,6 +442,9 @@ fn start_session(
         Err(error) => warn!(%error, "bar font will not be saved"),
     }
     compositor.enable_invitation();
+    if driver.is_none() {
+        start_modality_log(&mut compositor);
+    }
     compositor.set_decorations(tehuti::decorations::from_env());
     compositor.configure_destinations(tehuti::destinations::Paths {
         config: std::path::PathBuf::from(context_directory),
@@ -629,11 +670,12 @@ fn install_xwayland(
 fn shut_down(mut event_loop: EventLoop<LoopData>, data: LoopData) {
     let LoopData {
         display,
-        compositor,
+        mut compositor,
         redraw,
         seat_active,
         ..
     } = data;
+    let _closed_log = compositor.end_modality_log();
     // The dmabuf importer holds a renderer reference. Release it before the
     // backend, while the Wayland display is still alive.
     drop(compositor);

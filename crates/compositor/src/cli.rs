@@ -9,6 +9,7 @@ usage: tehuti <context-directory> [application] [arguments...]
        tehuti --version | -V
        tehuti --check-config [config-directory]
        tehuti --install-skill [path]
+       tehuti --keyboard-report [log-file]
        tehuti config share <context> <section>... [--as <name>]
 ";
 
@@ -23,6 +24,8 @@ pub enum Invocation {
     Config(Vec<OsString>),
     /// Install the agent skill under the given skills directory, or `~/.agents/skills`.
     InstallSkill(Option<OsString>),
+    /// Print the keyboard report from the modality log at the given path, or the default one.
+    KeyboardReport(Option<OsString>),
     /// Start the compositor with this context directory and optional first client.
     Session {
         context_directory: OsString,
@@ -52,6 +55,7 @@ enum Opt {
     Version,
     CheckConfig,
     InstallSkill,
+    KeyboardReport,
     /// Taken off by `main` before parsing; anywhere else it is unknown.
     TestDriver,
 }
@@ -62,6 +66,7 @@ const OPTIONS: &[(&str, Opt)] = &[
     ("version", Opt::Version),
     ("check-config", Opt::CheckConfig),
     ("install-skill", Opt::InstallSkill),
+    ("keyboard-report", Opt::KeyboardReport),
     ("test-driver", Opt::TestDriver),
 ];
 
@@ -112,6 +117,7 @@ pub fn parse_with(
         Some(Opt::Version) => return Ok(Invocation::Version),
         Some(Opt::CheckConfig) => return Ok(Invocation::CheckConfig(arguments.collect())),
         Some(Opt::InstallSkill) => return Ok(Invocation::InstallSkill(arguments.next())),
+        Some(Opt::KeyboardReport) => return Ok(Invocation::KeyboardReport(arguments.next())),
         Some(Opt::TestDriver) | None => {}
     }
     if first.as_encoded_bytes().starts_with(b"-") {
@@ -138,7 +144,14 @@ mod tests {
 
     #[test]
     fn an_option_name_without_dashes_is_rejected_not_read_as_a_context_directory() {
-        for word in ["check-config", "help", "version", "install-skill", "test-driver"] {
+        for word in [
+            "check-config",
+            "help",
+            "version",
+            "install-skill",
+            "keyboard-report",
+            "test-driver",
+        ] {
             assert_eq!(
                 parse([word, "--help"].map(OsString::from)),
                 Err(UsageError::MissingDashes(OsString::from(word))),
@@ -180,6 +193,18 @@ mod tests {
         assert_eq!(
             parse([OsString::from("--install-skill")]),
             Ok(Invocation::InstallSkill(None))
+        );
+    }
+
+    #[test]
+    fn keyboard_report_takes_an_optional_log_file() {
+        assert_eq!(
+            parse([OsString::from("--keyboard-report")]),
+            Ok(Invocation::KeyboardReport(None))
+        );
+        assert_eq!(
+            parse(["--keyboard-report", "log.jsonl"].map(OsString::from)),
+            Ok(Invocation::KeyboardReport(Some(OsString::from("log.jsonl"))))
         );
     }
 
