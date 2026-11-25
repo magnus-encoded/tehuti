@@ -27,7 +27,7 @@ mod tests {
             .unwrap()
     }
 
-    fn ok(socket: &Path, words: &[&str]) -> Value {
+    fn query(socket: &Path, words: &[&str]) -> Value {
         let result = ctl(socket, words);
         assert!(
             result.status.success(),
@@ -89,44 +89,44 @@ mod tests {
             String::from_utf8_lossy(&start.stderr)
         );
         let checked = std::panic::catch_unwind(|| {
-            assert!(ok(&socket, &["status"])["pid"].as_u64().is_some());
-            assert_eq!(ok(&socket, &["windows"]), json!([]));
-            assert_eq!(ok(&socket, &["workspaces"])[0]["active"], true);
-            assert_eq!(ok(&socket, &["outputs"])[0]["mode"]["width"], 320);
-            ok(&socket, &["layout", "focus-workspace-down"]);
-            ok(&socket, &["notice", "ctl test"]);
+            assert!(query(&socket, &["status"])["pid"].as_u64().is_some());
+            assert_eq!(query(&socket, &["windows"]), json!([]));
+            assert_eq!(query(&socket, &["workspaces"])[0]["active"], true);
+            assert_eq!(query(&socket, &["outputs"])[0]["mode"]["width"], 320);
+            query(&socket, &["layout", "focus-workspace-down"]);
+            query(&socket, &["notice", "ctl test"]);
             let scene: Value = serde_json::from_slice(&drive(&driver, &["scene", "--json"]).stdout).unwrap();
             assert_eq!(scene["notice"], "ctl test");
-            ok(&socket, &["display", "scale", "2"]);
-            assert_eq!(ok(&socket, &["outputs"])[0]["scale"], 2.0);
-            ok(&socket, &["display", "scale", "1"]);
-            ok(&socket, &["display", "mode", "640x480@60"]);
-            ok(&socket, &["display", "mode", "--restore"]);
-            assert_eq!(ok(&socket, &["outputs"])[0]["mode"]["width"], 320);
+            query(&socket, &["display", "scale", "2"]);
+            assert_eq!(query(&socket, &["outputs"])[0]["scale"], 2.0);
+            query(&socket, &["display", "scale", "1"]);
+            query(&socket, &["display", "mode", "640x480@60"]);
+            query(&socket, &["display", "mode", "--restore"]);
+            assert_eq!(query(&socket, &["outputs"])[0]["mode"]["width"], 320);
             let shot = root.path().join("shot.png");
-            ok(&socket, &["shot", "output", shot.to_str().unwrap()]);
+            query(&socket, &["shot", "output", shot.to_str().unwrap()]);
             assert_eq!(image::image_dimensions(shot).unwrap(), (320, 240));
-            assert_eq!(ok(&socket, &["context", "list"])[0]["app_id"], "*");
-            assert_eq!(ok(&socket, &["context", "active"])["global"], true);
-            assert_eq!(ok(&socket, &["context", "check"])["valid"], true);
+            assert_eq!(query(&socket, &["context", "list"])[0]["app_id"], "*");
+            assert_eq!(query(&socket, &["context", "active"])["global"], true);
+            assert_eq!(query(&socket, &["context", "check"])["valid"], true);
             std::fs::write(
                 config.join("context.toml"),
                 "app_id = 'org.example.Editor'\nbuttons = {}\nspeech = {}\n",
             )
             .unwrap();
             assert_eq!(
-                ok(&socket, &["context", "reload"])[0]["app_id"],
+                query(&socket, &["context", "reload"])[0]["app_id"],
                 "org.example.Editor"
             );
             std::fs::write(config.join("context.toml"), "invalid = '").unwrap();
             assert!(!ctl(&socket, &["context", "check"]).status.success());
             assert!(!ctl(&socket, &["context", "reload"]).status.success());
             assert_eq!(
-                ok(&socket, &["context", "list"])[0]["app_id"],
+                query(&socket, &["context", "list"])[0]["app_id"],
                 "org.example.Editor"
             );
-            assert_eq!(ok(&socket, &["plugin", "list"]), json!([]));
-            ok(&socket, &["launch", "Example Editor"]);
+            assert_eq!(query(&socket, &["plugin", "list"]), json!([]));
+            query(&socket, &["launch", "Example Editor"]);
             let deadline = Instant::now() + Duration::from_secs(3);
             while !bin.join("desktop-launched").exists() {
                 assert!(Instant::now() < deadline, "desktop application did not launch");
@@ -166,7 +166,7 @@ mod tests {
             events.read_line(&mut line).unwrap();
             assert!(line.contains("button"));
             malformed_requests_do_not_block(&socket);
-            ok(&socket, &["session", "restart"]);
+            query(&socket, &["session", "restart"]);
         });
         let _stopped = drive(&driver, &["stop"]);
         if let Err(panic) = checked {
@@ -194,7 +194,7 @@ mod tests {
             );
             assert!(!reply.contains("hidden"));
         }
-        ok(socket, &["status"]);
+        query(socket, &["status"]);
     }
 
     #[test]

@@ -1441,7 +1441,7 @@ impl Compositor {
     pub fn sample_sticks(&mut self, sticks: tehuti_core::dispatch::Sticks) {
         if sticks != tehuti_core::dispatch::Sticks::default() {
             self.push_control_event(
-                serde_json::json!({"kind": "sticks", "left": sticks.left, "right": sticks.right}),
+                &serde_json::json!({"kind": "sticks", "left": sticks.left, "right": sticks.right}),
             );
         }
         let _rejection = self.dispatch(DispatchInput::Sticks(sticks));
