@@ -264,7 +264,9 @@ fn keyboard_report(path: Option<std::ffi::OsString>) -> Result<ExitCode, Box<dyn
 
 /// Starts the modality log unless its switch file says `off`; a log that cannot open is skipped with a warning.
 fn start_modality_log(compositor: &mut Compositor) {
-    use tehuti::modality_log::{FileSink, Recorder, Stamp, default_path, enabled, switch_from_env, unix_ms_now};
+    use tehuti::modality_log::{
+        FileSink, Recorder, Stamp, default_path, enabled, switch_from_env, unix_ms_now,
+    };
     if !switch_from_env().is_ok_and(|switch| enabled(&switch)) {
         info!("modality log is off");
         return;

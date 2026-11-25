@@ -915,7 +915,9 @@ impl Compositor {
             Surface::Launcher => self.dispatch.launcher().is_some(),
             Surface::SystemMenu => self.dispatch.core().menu().is_some(),
             Surface::Keyboard => self.dispatch.keyboard().is_open(),
-            Surface::ChoiceList => self.dispatch.launcher().is_none() && self.dispatch.choice_list().is_some(),
+            Surface::ChoiceList => {
+                self.dispatch.launcher().is_none() && self.dispatch.choice_list().is_some()
+            }
         }
     }
 
@@ -930,7 +932,11 @@ impl Compositor {
     }
 
     /// Runs one input and records each surface it opened, credited to `modality`.
-    fn recording_modality<R>(&mut self, modality: crate::modality_log::Modality, run: impl FnOnce(&mut Self) -> R) -> R {
+    fn recording_modality<R>(
+        &mut self,
+        modality: crate::modality_log::Modality,
+        run: impl FnOnce(&mut Self) -> R,
+    ) -> R {
         use crate::modality_log::Surface;
         if self.modality_log.is_none() {
             return run(self);
@@ -1431,7 +1437,9 @@ impl Compositor {
             if pressed {
                 self.note_press(Modality::Pointer);
             }
-            self.recording_modality(Modality::Pointer, |compositor| compositor.pointer_click(button, pressed));
+            self.recording_modality(Modality::Pointer, |compositor| {
+                compositor.pointer_click(button, pressed)
+            });
         }
     }
 

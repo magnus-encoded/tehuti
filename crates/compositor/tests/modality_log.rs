@@ -18,7 +18,10 @@ mod modality_log {
         }
     }
 
-    fn logged(compositor: &mut Compositor, path: &std::path::Path) -> Result<Vec<Record>, Box<dyn core::error::Error>> {
+    fn logged(
+        compositor: &mut Compositor,
+        path: &std::path::Path,
+    ) -> Result<Vec<Record>, Box<dyn core::error::Error>> {
         compositor.set_modality_log(Recorder::start(
             FileSink::open(path.to_path_buf(), FileSink::DEFAULT_CAP_BYTES)?,
             Stamp {
@@ -44,7 +47,10 @@ mod modality_log {
         tap(compositor, KEY_Q);
         drop(compositor.end_modality_log());
         let text = std::fs::read_to_string(path)?;
-        assert!(!text.contains("zebra") && !text.contains("quartz"), "transcript text leaked: {text}");
+        assert!(
+            !text.contains("zebra") && !text.contains("quartz"),
+            "transcript text leaked: {text}"
+        );
         Ok(text
             .lines()
             .map(serde_json::from_str::<Line>)
@@ -53,7 +59,8 @@ mod modality_log {
     }
 
     #[test]
-    fn a_session_logs_modality_key_class_and_fallback_without_text() -> Result<(), Box<dyn core::error::Error>> {
+    fn a_session_logs_modality_key_class_and_fallback_without_text() -> Result<(), Box<dyn core::error::Error>>
+    {
         let root = tempfile::tempdir()?;
         let path = root.path().join("modality.jsonl");
         let display = Display::<Compositor>::new()?;

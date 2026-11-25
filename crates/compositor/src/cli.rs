@@ -144,7 +144,14 @@ mod tests {
 
     #[test]
     fn an_option_name_without_dashes_is_rejected_not_read_as_a_context_directory() {
-        for word in ["check-config", "help", "version", "install-skill", "keyboard-report", "test-driver"] {
+        for word in [
+            "check-config",
+            "help",
+            "version",
+            "install-skill",
+            "keyboard-report",
+            "test-driver",
+        ] {
             assert_eq!(
                 parse([word, "--help"].map(OsString::from)),
                 Err(UsageError::MissingDashes(OsString::from(word))),

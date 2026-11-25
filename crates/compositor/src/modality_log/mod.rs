@@ -251,6 +251,7 @@ pub struct Recorder<S: Sink> {
 
 impl<S: Sink> Recorder<S> {
     /// Opens a session span.
+    #[must_use]
     pub fn start(sink: S, at: Stamp) -> Self {
         let mut recorder = Self {
             sink,
@@ -263,6 +264,7 @@ impl<S: Sink> Recorder<S> {
     }
 
     /// Closes the session span and hands back the sink.
+    #[must_use]
     pub fn end(mut self, at: Stamp) -> S {
         self.write(at, Record::SessionEnd);
         self.sink

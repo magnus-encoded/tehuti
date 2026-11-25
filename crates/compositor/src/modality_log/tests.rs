@@ -62,11 +62,26 @@ fn run(notices: &[Notice], app_id: Option<&str>) -> Vec<String> {
 fn a_modifier_alone_is_no_action_and_a_key_under_it_is_a_shortcut() {
     let lines = run(
         &[
-            Notice::Key { code: 29, pressed: true },
-            Notice::Key { code: KEY_S, pressed: true },
-            Notice::Key { code: KEY_S, pressed: false },
-            Notice::Key { code: 29, pressed: false },
-            Notice::Key { code: KEY_A, pressed: true },
+            Notice::Key {
+                code: 29,
+                pressed: true,
+            },
+            Notice::Key {
+                code: KEY_S,
+                pressed: true,
+            },
+            Notice::Key {
+                code: KEY_S,
+                pressed: false,
+            },
+            Notice::Key {
+                code: 29,
+                pressed: false,
+            },
+            Notice::Key {
+                code: KEY_A,
+                pressed: true,
+            },
         ],
         Some("editor"),
     );
@@ -90,7 +105,10 @@ fn a_key_soon_after_an_unmatched_transcript_is_a_fallback() {
         &[
             Notice::Speech(SpeechOutcome::Unmatched),
             Notice::Wait(3_000),
-            Notice::Key { code: KEY_A, pressed: true },
+            Notice::Key {
+                code: KEY_A,
+                pressed: true,
+            },
         ],
         Some("editor"),
     );
@@ -204,11 +222,20 @@ proptest! {
 fn presses_far_apart_are_separate_occurrences_and_close_ones_one() {
     let lines = run(
         &[
-            Notice::Key { code: KEY_A, pressed: true },
+            Notice::Key {
+                code: KEY_A,
+                pressed: true,
+            },
             Notice::Wait(500),
-            Notice::Key { code: KEY_S, pressed: true },
+            Notice::Key {
+                code: KEY_S,
+                pressed: true,
+            },
             Notice::Wait(60_000),
-            Notice::Key { code: KEY_A, pressed: true },
+            Notice::Key {
+                code: KEY_A,
+                pressed: true,
+            },
         ],
         Some("editor"),
     );
@@ -220,7 +247,8 @@ fn presses_far_apart_are_separate_occurrences_and_close_ones_one() {
 
 #[test]
 fn a_cut_off_line_is_skipped_not_fatal() {
-    let (parsed, skipped) = parse("{\"time_unix_ms\":1,\"name\":\"session_start\"}\n{\"time_unix_ms\":2,\"na");
+    let (parsed, skipped) =
+        parse("{\"time_unix_ms\":1,\"name\":\"session_start\"}\n{\"time_unix_ms\":2,\"na");
     assert_eq!((parsed.len(), skipped), (1, 1), "parsed");
 }
 
@@ -228,10 +256,16 @@ fn a_cut_off_line_is_skipped_not_fatal() {
 fn the_rendered_report_ranks_the_most_used_situation_first() {
     let mut notices = Vec::new();
     for _burst in 0..3 {
-        notices.push(Notice::Key { code: 103, pressed: true });
+        notices.push(Notice::Key {
+            code: 103,
+            pressed: true,
+        });
         notices.push(Notice::Wait(5_000));
     }
-    notices.push(Notice::Key { code: KEY_A, pressed: true });
+    notices.push(Notice::Key {
+        code: KEY_A,
+        pressed: true,
+    });
     let lines = run(&notices, Some("viewer"));
     let (parsed, skipped) = parse(&lines.join("\n"));
     let text = render(&build(&parsed, skipped), 10);
@@ -247,7 +281,8 @@ fn the_file_moves_aside_at_the_cap_so_both_files_stay_under_it() {
     let path = root.path().join("state/modality.jsonl");
     let mut sink = FileSink::open(path.clone(), 200).unwrap();
     for _line in 0..100 {
-        sink.append("{\"time_unix_ms\":0,\"name\":\"session_start\"}").unwrap();
+        sink.append("{\"time_unix_ms\":0,\"name\":\"session_start\"}")
+            .unwrap();
     }
     for file in [path.clone(), FileSink::rotated(&path)] {
         let size = std::fs::metadata(&file).unwrap().len();
