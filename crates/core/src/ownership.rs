@@ -1,8 +1,7 @@
-//! Who gets a button press, as one pure answer (#800, step 1).
+//! Who gets a button press, as one pure answer (#800, #888).
 //!
-//! This models today's routing exactly and is not wired into dispatch or the compositor yet.
-//! The differential test at the bottom drives the existing routing and this module over generated
-//! states and requires them to agree.
+//! Core `route` and `dispatch` and the compositor's virtual-pad hook ask this module for the
+//! chord, Guide and push-to-talk decisions (#888). Generated properties below pin the layer order.
 //!
 //! The scope is what core `route` and the push-to-talk rules decide while no overlay other than
 //! the system menu has the pad. Overlays (settings, launcher, keyboard, mouse mode, secret
@@ -222,16 +221,6 @@ impl OwnershipView {
         }
     }
 
-    fn tehuti_after_talk(&self, button: ButtonName) -> Option<Owner> {
-        if self.menu_release(button) {
-            Some(Owner::Tehuti(Why::MenuRelease))
-        } else if self.dpad_chord(button) {
-            Some(Owner::Tehuti(Why::GuideDpadChord))
-        } else {
-            None
-        }
-    }
-
     fn maps(&self, button: ButtonName) -> Option<Scope> {
         if self.focused_maps.contains(&button) {
             Some(Scope::Active)
@@ -296,7 +285,7 @@ impl OwnershipView {
 /// Who gets `button` in `phase` right now.
 ///
 /// Precedence, highest first. Without passthrough: Guide, the Start chord, the open system
-/// menu, push-to-talk, a menu release, the Guide d-pad chord, the columns level, then the
+/// menu, the Guide d-pad chord, push-to-talk, a menu release, the columns level, then the
 /// route layers (global Confirm, stick modifier, held key, plugin, mapping, dropped). With
 /// passthrough the chord layers come before push-to-talk and everything else goes to the app.
 #[must_use]
@@ -307,11 +296,15 @@ pub fn owner(view: &OwnershipView, button: ButtonName, phase: Phase) -> Owner {
     if let Some(owner) = view.tehuti_first(button, phase) {
         return owner;
     }
+    // Outside passthrough the Guide d-pad chord outranks push-to-talk, as `route` and dispatch do.
+    if view.dpad_chord(button) {
+        return Owner::Tehuti(Why::GuideDpadChord);
+    }
     if view.talks(button) {
         return Owner::Talk(view.talk_source);
     }
-    if let Some(owner) = view.tehuti_after_talk(button) {
-        return owner;
+    if view.menu_release(button) {
+        return Owner::Tehuti(Why::MenuRelease);
     }
     if view.level == Level::Columns && matches!(button, ButtonName::LeftBumper | ButtonName::RightBumper) {
         return Owner::Level;
@@ -371,7 +364,52 @@ impl Claims {
     }
 }
 
+impl From<tehuti_protocol::ButtonState> for Phase {
+    fn from(state: tehuti_protocol::ButtonState) -> Self {
+        match state {
+            tehuti_protocol::ButtonState::Pressed => Self::Pressed,
+            tehuti_protocol::ButtonState::Released => Self::Released,
+        }
+    }
+}
+
+impl OwnershipView {
+    /// The escape-chord layers, which `route` and dispatch run ahead of the open menu: Guide, the
+    /// Start chord and the Guide d-pad chord.
+    #[must_use]
+    pub fn chord(&self, button: ButtonName, phase: Phase) -> Option<Why> {
+        if button == ButtonName::Guide {
+            Some(Why::EscapeChord)
+        } else if self.start_chord(button, phase) {
+            Some(Why::ChordStart)
+        } else if self.dpad_chord(button) {
+            Some(Why::GuideDpadChord)
+        } else {
+            None
+        }
+    }
+
+    /// Whether the push-to-talk chord is down under passthrough; a Select-only list is special-cased.
+    #[must_use]
+    pub fn talk_held(&self) -> bool {
+        self.talk != [ButtonName::Select] && self.talk.iter().all(|member| self.held_buttons.contains(member))
+    }
+}
+
 impl State {
+    /// Which escape-chord layer takes `button`, asked before the step changes any chord state.
+    pub(crate) fn chord_owner(&self, button: ButtonName, phase: Phase) -> Option<Why> {
+        self.ownership_view(false).chord(button, phase)
+    }
+
+    /// Whether the held push-to-talk chord is complete, from dispatch's own held list.
+    #[must_use]
+    pub fn talk_held(&self, held: &[ButtonName]) -> bool {
+        let mut view = self.ownership_view(false);
+        view.held_buttons = held.to_vec();
+        view.talk_held()
+    }
+
     /// The ownership snapshot of this state; rebuild it each step, never cache it.
     #[must_use]
     pub fn ownership_view(&self, plugin_active: bool) -> OwnershipView {
@@ -454,10 +492,10 @@ mod tests {
     use core::time::Duration;
 
     use proptest::prelude::*;
-    use tehuti_protocol::{Action, ButtonState, Event, KeyName, parse_context};
+    use tehuti_protocol::{ButtonState, Event, parse_context};
 
     use super::*;
-    use crate::{escape_chord, menu_button_release, pad::PadFamily, step_with_plugin};
+    use crate::pad::PadFamily;
 
     fn any_button() -> impl Strategy<Value = ButtonName> {
         prop::sample::select(ALL_BUTTONS.to_vec())
@@ -571,6 +609,7 @@ mod tests {
                 && view.talks(button)
                 && button != ButtonName::Guide
                 && !view.start_chord(button, phase)
+                && !view.dpad_chord(button)
             {
                 prop_assert_eq!(got, Owner::Talk(view.talk_source));
             }
@@ -888,126 +927,24 @@ mod tests {
         }
     }
 
-    /// What the old routing did with the event, as an owner kind.
-    #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-    enum Kind {
-        Tehuti,
-        Level,
-        Talk,
-        Plugin,
-        Context(Scope),
-        GlobalLayer,
-        App,
-        Dropped,
-        /// Behaviour of the stick-modifier layer, which may replay a tap as a press.
-        Sticks,
-    }
-
-    fn kind(owner: Owner) -> Kind {
-        match owner {
-            Owner::Tehuti(_) => Kind::Tehuti,
-            Owner::Level => Kind::Level,
-            Owner::Talk(_) => Kind::Talk,
-            Owner::Plugin => Kind::Plugin,
-            Owner::Context {
-                why: Why::StickModifier,
-                ..
-            } => Kind::Sticks,
-            Owner::Context { scope, .. } => Kind::Context(scope),
-            Owner::GlobalLayer => Kind::GlobalLayer,
-            Owner::App => Kind::App,
-            Owner::Dropped => Kind::Dropped,
-        }
-    }
-
-    /// The existing routing's answer: its own predicates for the Tehuti and talk layers, then the
-    /// actions `route` returns for everything it routes itself.
-    fn old_routing(scenario: &Scenario, state: &State) -> Kind {
-        let event = scenario.event();
-        let chord = escape_chord(&mut state.clone(), &event).is_some();
-        let keyed_chord = chord && matches!(scenario.button, ButtonName::Guide | ButtonName::Start);
-        let menu_release = menu_button_release(&mut state.clone(), &event);
-        let first = keyed_chord || state.menu.is_some();
-        if state.passthrough() {
-            if menu_release || first {
-                return Kind::Tehuti;
-            }
-            // Dispatch fires talk from the held buttons before `route` reaches the chord.
-            let members = state.talk_buttons().0;
-            let held = |member: &ButtonName| *member == scenario.button || scenario.held.contains(member);
-            if members.contains(&scenario.button)
-                && (members == [ButtonName::Select] || members.iter().all(held))
-            {
-                return Kind::Talk;
-            }
-            return if chord { Kind::Tehuti } else { Kind::App };
-        }
-        if first {
-            return Kind::Tehuti;
-        }
-        if state.push_to_talk(scenario.button) {
-            return Kind::Talk;
-        }
-        if menu_release || chord {
-            return Kind::Tehuti;
-        }
-        let (_, actions, routed) = step_with_plugin(state.clone(), &event, scenario.plugin_active);
-        let shoulder = matches!(scenario.button, ButtonName::LeftBumper | ButtonName::RightBumper);
-        if shoulder && state.level == Level::Columns {
-            return Kind::Level;
-        }
-        // The global layer takes an unmodified Confirm press before the stick modifiers see it.
-        let confirm_press = scenario.phase == Phase::Pressed
-            && scenario.button == state.pad_family.button(pad::Role::Confirm);
-        if !confirm_press
-            && (match scenario.phase {
-                Phase::Pressed => state.focused_stick_modifier(scenario.button),
-                Phase::Released => state.sticks.holds(scenario.button),
-            })
-        {
-            return Kind::Sticks;
-        }
-        if routed {
-            return Kind::Plugin;
-        }
-        match actions.as_slice() {
-            [Action::Layout { .. }] if shoulder => Kind::Level,
-            [Action::Text { text }] if text.as_str() == "f" => Kind::Context(Scope::Active),
-            [Action::Text { text }] if text.as_str() == "g" => Kind::Context(Scope::Global),
-            [Action::KeyDown { key: KeyName::X }] => Kind::Context(Scope::Active),
-            [Action::KeyDown { key: KeyName::Y }] => Kind::Context(Scope::Global),
-            [
-                Action::Key {
-                    key: KeyName::Enter, ..
-                },
-            ] => Kind::GlobalLayer,
-            _ => Kind::Dropped,
-        }
-    }
-
-    impl State {
-        fn focused_stick_modifier(&self, button: ButtonName) -> bool {
-            focused_context(self).is_some_and(|context| context.stick_modifier(button))
-        }
-    }
-
     proptest! {
-        /// Differential: `owner` agrees with today's routing on generated states and buttons.
+        /// Core routing takes the model's answer: a press Tehuti's chord layers or push-to-talk own
+        /// reaches no context, plugin or app.
         #[test]
-        fn owner_agrees_with_todays_routing(scenario in scenario()) {
+        fn route_gives_chord_and_talk_presses_no_actions(scenario in scenario()) {
             let state = scenario.state();
             let mut view = state.ownership_view(scenario.plugin_active);
             view.held_buttons.clone_from(&scenario.held);
             let got = owner(&view, scenario.button, scenario.phase);
-            prop_assert_eq!(kind(got), old_routing(&scenario, &state), "view {:?}", view);
-        }
-
-        /// The view's push-to-talk set is what `push_to_talk` says, in every mode.
-        #[test]
-        fn the_view_talks_like_the_old_lookups(scenario in scenario(), button in any_button()) {
-            let state = scenario.state();
-            let view = state.ownership_view(false);
-            prop_assert_eq!(view.talks(button), state.push_to_talk(button));
+            let taken = matches!(
+                got,
+                Owner::Tehuti(Why::EscapeChord | Why::ChordStart) | Owner::Talk(_)
+            );
+            if taken && scenario.phase == Phase::Pressed && !state.passthrough() {
+                let (_, actions, routed) =
+                    crate::step_with_plugin(state, &scenario.event(), scenario.plugin_active);
+                prop_assert!(actions.is_empty() && !routed, "{got:?} left {actions:?}");
+            }
         }
     }
 

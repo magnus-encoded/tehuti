@@ -60,7 +60,8 @@ pub struct State {
     pad_family: pad::PadFamily,
     controller_talk: Option<ButtonName>,
     app_names: Vec<(String, String)>,
-    plugin_invoke_words: Vec<String>,
+    /// Invoke words each plugin supplies, kept per plugin so its exit clears exactly its own.
+    plugin_invoke_words: Vec<(usize, Vec<String>)>,
     sticks: stick_actions::StickActions,
     /// Characters of the last dictated phrase, while nothing else was typed after it.
     dictated: Option<usize>,
@@ -434,12 +435,15 @@ impl State {
 
     /// The extra invoke words application plugins currently supply.
     #[must_use]
-    pub fn plugin_invoke_words(&self) -> &[String] {
-        &self.plugin_invoke_words
+    pub fn plugin_invoke_words(&self) -> Vec<String> {
+        self.plugin_invoke_words
+            .iter()
+            .flat_map(|(_, words)| words.iter().cloned())
+            .collect()
     }
 
-    /// Replaces the extra invoke words application plugins supply for the focused window.
-    pub fn set_plugin_invoke_words(&mut self, words: Vec<String>) {
+    /// Replaces the extra invoke words application plugins supply for the focused window, per plugin.
+    pub fn set_plugin_invoke_words(&mut self, words: Vec<(usize, Vec<String>)>) {
         self.plugin_invoke_words = words;
     }
 
@@ -741,7 +745,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
         return (state, actions, false);
     }
-    if let Some(actions) = talk_or_invoke(&state, event) {
+    if let Some(actions) = talk_or_invoke(&state, event, plugin_active) {
         return (state, actions, false);
     }
     if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
@@ -760,9 +764,22 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
 /// A push-to-talk press does nothing more. Speech meets the built-in `invoke` verb
 /// ahead of plugin verbs and context phrases; its words snap to the focused and
 /// global contexts' invoke words.
-fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
+fn talk_or_invoke(state: &State, event: &Event, plugin_active: bool) -> Option<Vec<Action>> {
     let transcript = match event {
-        Event::Button { name, .. } if state.push_to_talk(*name) => return Some(Vec::new()),
+        Event::Button {
+            name,
+            state: button_state,
+        } if matches!(
+            ownership::owner(
+                &state.ownership_view(plugin_active),
+                *name,
+                (*button_state).into()
+            ),
+            ownership::Owner::Talk(_)
+        ) =>
+        {
+            return Some(Vec::new());
+        }
         Event::Speech { text } => text,
         Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => return None,
     };
@@ -770,7 +787,12 @@ fn talk_or_invoke(state: &State, event: &Event) -> Option<Vec<Action>> {
         .into_iter()
         .flatten()
         .flat_map(|context| context.invoke_words().iter().map(String::as_str))
-        .chain(state.plugin_invoke_words.iter().map(String::as_str));
+        .chain(
+            state
+                .plugin_invoke_words
+                .iter()
+                .flat_map(|(_, words)| words.iter().map(String::as_str)),
+        );
     let typed = invoke::slash_command(transcript.as_str(), known)?;
     tehuti_protocol::Text::new(typed)
         .ok()
@@ -1212,39 +1234,33 @@ fn guide_dpad(state: &mut State, name: ButtonName, button: ButtonState) -> Vec<A
 fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     match event {
         Event::Button {
-            name: ButtonName::Guide,
+            name,
             state: button_state,
         } => {
-            guide_button(state, *button_state);
-            Some(Vec::new())
-        }
-        Event::Button {
-            name:
-                name @ (ButtonName::DpadUp | ButtonName::DpadDown | ButtonName::DpadLeft | ButtonName::DpadRight),
-            state: button_state,
-        } if (state.guide_held.is_some() && state.guide_mode() != GuideMode::App)
-            || state.chord_buttons.contains(name) =>
-        {
-            Some(guide_dpad(state, *name, *button_state))
-        }
-        Event::Button {
-            name: ButtonName::Start,
-            state: button_state,
-        } => {
-            state.start_held = *button_state == ButtonState::Pressed;
-            let consumed = if state.start_held {
-                state.start_in_chord |= state.guide_held.is_some();
-                state.start_in_chord
-            } else {
-                core::mem::take(&mut state.start_in_chord)
-            };
-            if state.guide_held.is_some() {
-                state.guide_tap = None;
+            let chord = state.chord_owner(*name, (*button_state).into());
+            match chord {
+                Some(ownership::Why::EscapeChord) => {
+                    guide_button(state, *button_state);
+                    Some(Vec::new())
+                }
+                Some(ownership::Why::GuideDpadChord) => Some(guide_dpad(state, *name, *button_state)),
+                _ if *name == ButtonName::Start => {
+                    state.start_held = *button_state == ButtonState::Pressed;
+                    if state.start_held {
+                        state.start_in_chord |= state.guide_held.is_some();
+                    } else {
+                        state.start_in_chord = false;
+                    }
+                    if state.guide_held.is_some() {
+                        state.guide_tap = None;
+                    }
+                    if let Some(held) = &mut state.guide_held {
+                        *held = core::time::Duration::ZERO;
+                    }
+                    (chord == Some(ownership::Why::ChordStart)).then(Vec::new)
+                }
+                _ => None,
             }
-            if let Some(held) = &mut state.guide_held {
-                *held = core::time::Duration::ZERO;
-            }
-            consumed.then(Vec::new)
         }
         Event::Tick { elapsed } => {
             if let Some(tap) = &mut state.guide_tap {
@@ -1265,7 +1281,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
             }
             Some(Vec::new())
         }
-        Event::Button { .. } | Event::Focus { .. } | Event::Speech { .. } => None,
+        Event::Focus { .. } | Event::Speech { .. } => None,
     }
 }
 

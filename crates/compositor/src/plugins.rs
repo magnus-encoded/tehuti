@@ -183,16 +183,17 @@ impl Plugins {
     }
 
     /// Invoke words of the initialized application plugins that cover `app_id`, in manifest order.
-    pub(crate) fn invoke_words(&self, app_id: &str) -> Vec<String> {
+    pub(crate) fn invoke_words(&self, app_id: &str) -> Vec<(usize, Vec<String>)> {
         self.entries
             .iter()
             .filter(|entry| {
                 entry.manifest.kind == PluginKind::Application
                     && entry.manifest.app_ids.iter().any(|name| name == app_id)
             })
-            .filter_map(|entry| entry.session.as_ref())
-            .filter(|session| session.borrow().status == Status::Ready)
-            .flat_map(|session| session.borrow().invoke_words.clone())
+            .filter_map(|entry| entry.session.as_ref().map(|session| (entry.plugin, session)))
+            .filter(|(_, session)| session.borrow().status == Status::Ready)
+            .map(|(plugin, session)| (plugin, session.borrow().invoke_words.clone()))
+            .filter(|(_, words)| !words.is_empty())
             .collect()
     }
 
@@ -1600,7 +1601,7 @@ mod tests {
             );
             assert_eq!(
                 plugins.invoke_words("test"),
-                ["usage"],
+                [(1, vec!["usage".to_owned()])],
                 "the second list replaces"
             );
             assert!(

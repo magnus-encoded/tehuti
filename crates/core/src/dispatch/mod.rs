@@ -1958,11 +1958,7 @@ fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Eff
 }
 
 fn passthrough_talk_held(state: &State) -> bool {
-    let (members, _) = state.core.talk_buttons();
-    members != [ButtonName::Select]
-        && members
-            .iter()
-            .all(|member| state.passthrough_buttons.contains(member))
+    state.core.talk_held(&state.passthrough_buttons)
 }
 
 fn controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {

@@ -110,7 +110,10 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Action>, Option<Rejec
     }
 }
 
+/// The one reducer for a plugin's exit: its pending requests fall back and its claims on the state
+/// (invoke words) clear together, so no exit path can leave one behind.
 fn exit(state: &mut State, plugin: usize) -> Vec<Action> {
+    state.plugin_invoke_words.retain(|(owner, _)| *owner != plugin);
     let mut actions = Vec::new();
     state.pending.retain_mut(|pending| {
         if pending.key.plugin == plugin {
