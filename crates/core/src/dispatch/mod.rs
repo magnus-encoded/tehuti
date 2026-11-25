@@ -1930,8 +1930,7 @@ fn choice_list_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>
     if *button == ButtonState::Pressed && !state.choice_buttons.contains(name) {
         state.choice_buttons.push(*name);
         let family = state.core.pad_family();
-        let mut outcome = None;
-        if let Some(list) = &mut state.choice_list {
+        let outcome = state.choice_list.as_mut().map(|list| {
             if *name == family.button(crate::pad::Role::Back) {
                 list.cancel();
             } else if *name == family.button(crate::pad::Role::Confirm) || *name == ButtonName::Start {
@@ -1941,8 +1940,8 @@ fn choice_list_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>
             } else if *name == ButtonName::DpadDown {
                 list.move_selection(true);
             }
-            outcome = Some(list.outcome());
-        }
+            list.outcome()
+        });
         finish_capture_choice(state, outcome, effects);
     }
     true
