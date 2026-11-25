@@ -932,18 +932,19 @@ mod tests {
         /// reaches no context, plugin or app.
         #[test]
         fn route_gives_chord_and_talk_presses_no_actions(scenario in scenario()) {
-            prop_assume!(scenario.phase == Phase::Pressed);
             let state = scenario.state();
-            prop_assume!(!state.passthrough());
             let mut view = state.ownership_view(scenario.plugin_active);
             view.held_buttons.clone_from(&scenario.held);
             let got = owner(&view, scenario.button, scenario.phase);
-            prop_assume!(matches!(
+            let taken = matches!(
                 got,
                 Owner::Tehuti(Why::EscapeChord | Why::ChordStart) | Owner::Talk(_)
-            ));
-            let (_, actions, routed) = crate::step_with_plugin(state, &scenario.event(), scenario.plugin_active);
-            prop_assert!(actions.is_empty() && !routed, "{got:?} left {actions:?}");
+            );
+            if taken && scenario.phase == Phase::Pressed && !state.passthrough() {
+                let (_, actions, routed) =
+                    crate::step_with_plugin(state, &scenario.event(), scenario.plugin_active);
+                prop_assert!(actions.is_empty() && !routed, "{got:?} left {actions:?}");
+            }
         }
     }
 
