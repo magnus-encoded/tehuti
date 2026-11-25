@@ -220,6 +220,60 @@ right_stick = { ticker = "toggle" }
     }
 
     #[test]
+    fn columns_level_shows_default_layout_chords_with_the_pads_names() {
+        let contexts = contexts(&[GLOBAL]);
+        let letter_entries = ticker::entries(
+            &contexts,
+            Some("org.example.App"),
+            PadFamily::Letters,
+            Level::Columns,
+        );
+        let letters = texts(&letter_entries);
+        for expected in [
+            "LB -> Column left",
+            "RB -> Column right",
+            "LT -> Workspace up",
+            "RT -> Workspace down",
+            "LS -> Full width",
+            "RS -> \u{26f6}",
+            "Guide + Up -> Move up",
+            "Guide + Down -> Move down",
+            "Guide + Left -> Move left",
+            "Guide + Right -> Move right",
+        ] {
+            assert!(
+                letters.contains(&expected.to_owned()),
+                "missing {expected} in {letters:?}"
+            );
+        }
+        let letter_words: Vec<String> = letter_entries.iter().map(|entry| entry.text(|_| false)).collect();
+        assert!(
+            letter_words.contains(&"RS -> Full screen".to_owned()),
+            "fullscreen fallback names the voice unit: {letter_words:?}"
+        );
+        let symbols = texts(&ticker::entries(
+            &contexts,
+            Some("org.example.App"),
+            PadFamily::Symbols,
+            Level::Columns,
+        ));
+        for expected in [
+            "L1 -> Column left",
+            "R1 -> Column right",
+            "L2 -> Workspace up",
+            "R2 -> Workspace down",
+            "L3 -> Full width",
+            "R3 -> \u{26f6}",
+            "Guide + Left -> Move left",
+        ] {
+            assert!(
+                symbols.contains(&expected.to_owned()),
+                "missing {expected} in {symbols:?}"
+            );
+        }
+    }
+
+    #[test]
     fn an_icon_the_renderer_cannot_draw_falls_back_to_its_word() {
         let contexts = contexts(&[GLOBAL, GAME]);
         let entries = ticker::entries(

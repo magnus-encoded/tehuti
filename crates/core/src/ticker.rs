@@ -170,7 +170,7 @@ const ICON_LABELS: [(&str, &str); 13] = [
     ("\u{1f50a}", "Vol+"),
     ("\u{1f507}", "Mute"),
     ("\u{274c}", "Close"),
-    ("\u{26f6}", "Fullscreen"),
+    ("\u{26f6}", "Full screen"),
     ("\u{23ef}", "Pause"),
     ("\u{23f8}", "Pause"),
     ("\u{1f504}", "Restart"),
@@ -236,7 +236,7 @@ pub fn action_text(action: &Action) -> String {
         Action::SecretRequest { .. } => "Secret".into(),
         Action::Quit => "Quit".into(),
         Action::Restart => "Restart".into(),
-        Action::Layout { action } => layout_text(*action).into(),
+        Action::Layout { action } => layout_text(*action),
         Action::ToggleTicker => "Ticker".into(),
         Action::UndoDictation => "Undo".into(),
     }
@@ -313,22 +313,29 @@ pub fn action_pieces(action: &Action) -> Vec<Piece> {
     }
 }
 
-const fn layout_text(action: LayoutAction) -> &'static str {
+/// The short name of a layout action; for voice units it matches the phrase voice accepts.
+#[must_use]
+pub fn layout_text(action: LayoutAction) -> String {
     match action {
-        LayoutAction::FocusColumnLeft => "Column left",
-        LayoutAction::FocusColumnRight => "Column right",
-        LayoutAction::FocusWindowUp => "Window up",
-        LayoutAction::FocusWindowDown => "Window down",
-        LayoutAction::MoveColumnLeft => "Move left",
-        LayoutAction::MoveColumnRight => "Move right",
-        LayoutAction::SwitchPresetColumnWidth => "Wider",
-        LayoutAction::SwitchPresetColumnWidthBack => "Narrower",
-        LayoutAction::FocusWorkspaceDown => "Workspace down",
-        LayoutAction::FocusWorkspaceUp => "Workspace up",
-        LayoutAction::MoveColumnToWorkspaceDown => "Move down",
-        LayoutAction::MoveColumnToWorkspaceUp => "Move up",
-        LayoutAction::ToggleFullscreen => "Fullscreen",
-        LayoutAction::MaximizeColumn => "Maximize",
+        LayoutAction::FocusColumnLeft => "Column left".into(),
+        LayoutAction::FocusColumnRight => "Column right".into(),
+        LayoutAction::FocusWindowUp => "Window up".into(),
+        LayoutAction::FocusWindowDown => "Window down".into(),
+        LayoutAction::MoveColumnLeft => "Move left".into(),
+        LayoutAction::MoveColumnRight => "Move right".into(),
+        LayoutAction::SwitchPresetColumnWidth => "Wider".into(),
+        LayoutAction::SwitchPresetColumnWidthBack => "Narrower".into(),
+        LayoutAction::FocusWorkspaceDown => "Workspace down".into(),
+        LayoutAction::FocusWorkspaceUp => "Workspace up".into(),
+        LayoutAction::FocusWorkspace(workspace) => format!("Workspace {workspace}"),
+        LayoutAction::MoveColumnToWorkspaceDown => "Move down".into(),
+        LayoutAction::MoveColumnToWorkspaceUp => "Move up".into(),
+        LayoutAction::MoveColumnToWorkspace(workspace) => format!("Send to workspace {workspace}"),
+        LayoutAction::MoveColumnToWorkspaceStay(workspace) => {
+            format!("Send to workspace {workspace} and stay")
+        }
+        LayoutAction::ToggleFullscreen => "Full screen".into(),
+        LayoutAction::MaximizeColumn => "Full width".into(),
     }
 }
 
@@ -420,6 +427,9 @@ pub(crate) fn entries_for(
     modifier: Option<ButtonName>,
 ) -> Vec<Entry> {
     let mut entries = button_entries(active, global, pad, level);
+    if level == crate::Level::Columns {
+        entries.extend(guide_chord_entries(pad, level));
+    }
     if !(level == crate::Level::App && active.is_some_and(Context::passthrough)) {
         entries.extend(stick_entries(active, pad, modifier));
     }
@@ -525,35 +535,34 @@ fn stick_entries(active: Option<&Context>, pad: PadFamily, modifier: Option<Butt
         .collect()
 }
 
-/// What a bumper does at the columns level, if it is one.
+const GUIDE_DPAD: [ButtonName; 4] = [
+    ButtonName::DpadUp,
+    ButtonName::DpadDown,
+    ButtonName::DpadLeft,
+    ButtonName::DpadRight,
+];
+
+/// The built-in Guide + D-pad layout chords for `level`.
+fn guide_chord_entries(pad: PadFamily, level: crate::Level) -> Vec<Entry> {
+    GUIDE_DPAD
+        .into_iter()
+        .filter_map(|direction| {
+            let action = crate::guide_dpad_action(level, direction)?;
+            let trigger = vec![
+                pad.piece(ButtonName::Guide),
+                Piece::Text("+".into()),
+                pad.piece(direction),
+            ];
+            Some(Entry::new(trigger, &Action::Layout { action }, None))
+        })
+        .collect()
+}
+
+/// What a button does at the columns level, if it has a built-in layout action.
 const fn column_action(button: ButtonName) -> Option<Action> {
-    match button {
-        ButtonName::LeftBumper => Some(Action::Layout {
-            action: LayoutAction::FocusColumnLeft,
-        }),
-        ButtonName::RightBumper => Some(Action::Layout {
-            action: LayoutAction::FocusColumnRight,
-        }),
-        ButtonName::South
-        | ButtonName::East
-        | ButtonName::North
-        | ButtonName::West
-        | ButtonName::LeftTrigger
-        | ButtonName::RightTrigger
-        | ButtonName::Select
-        | ButtonName::Record
-        | ButtonName::Start
-        | ButtonName::Guide
-        | ButtonName::LeftStick
-        | ButtonName::RightStick
-        | ButtonName::Paddle1
-        | ButtonName::Paddle2
-        | ButtonName::Paddle3
-        | ButtonName::Paddle4
-        | ButtonName::DpadUp
-        | ButtonName::DpadDown
-        | ButtonName::DpadLeft
-        | ButtonName::DpadRight => None,
+    match crate::columns_level_action(button) {
+        Some(action) => Some(Action::Layout { action }),
+        None => None,
     }
 }
 

@@ -1649,7 +1649,7 @@ pub enum Action {
 }
 
 /// A tiling action a context maps to a button or phrase, written in kebab case,
-/// such as `layout = "focus-column-left"`.
+/// such as `layout = "focus-column-left"` or `layout = { focus-workspace = 2 }`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "kebab-case")]
 #[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
@@ -1666,8 +1666,14 @@ pub enum LayoutAction {
     SwitchPresetColumnWidthBack,
     FocusWorkspaceDown,
     FocusWorkspaceUp,
+    /// Focuses the 1-based workspace position on the focused output.
+    FocusWorkspace(core::num::NonZeroU8),
     MoveColumnToWorkspaceDown,
     MoveColumnToWorkspaceUp,
+    /// Moves the focused column to the 1-based workspace position and follows focus to it.
+    MoveColumnToWorkspace(core::num::NonZeroU8),
+    /// Moves the focused column to the 1-based workspace position and stays on the current workspace.
+    MoveColumnToWorkspaceStay(core::num::NonZeroU8),
     ToggleFullscreen,
     MaximizeColumn,
 }

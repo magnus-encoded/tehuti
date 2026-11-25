@@ -3459,7 +3459,13 @@ impl Compositor {
     }
 
     fn apply_layout(&mut self, action: tehuti_protocol::LayoutAction) {
+        let moved = matches!(action, tehuti_protocol::LayoutAction::MoveColumnToWorkspace(_))
+            .then(|| self.placement.focused().cloned())
+            .flatten();
         self.apply_layout_command(tehuti_core::layout::command_for(action));
+        if moved.is_some() {
+            self.follow_window(moved);
+        }
     }
 
     /// Applies a tiling command and places the mapped windows.
