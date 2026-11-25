@@ -291,8 +291,8 @@ impl Session {
         }
     }
 
-    pub(crate) fn control_launch(&mut self, launch: crate::launch::Launch) -> Result<(), String> {
-        self.children.start(&launch, Instant::now())
+    pub(crate) fn control_launch(&mut self, launch: &crate::launch::Launch) -> Result<(), String> {
+        self.children.start(launch, Instant::now())
     }
 
     pub(crate) fn installed(&self) -> Vec<String> {

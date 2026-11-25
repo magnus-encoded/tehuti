@@ -5,11 +5,7 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 impl Compositor {
-    #[expect(
-        clippy::redundant_pub_crate,
-        reason = "observer is shared with the parent state module"
-    )]
-    pub(super) fn push_control_event(&mut self, data: Value) {
+    pub(super) fn push_control_event(&mut self, data: &Value) {
         self.control_sequence = self.control_sequence.saturating_add(1);
         if self.control_events.len() >= 128 {
             let _oldest = self.control_events.pop_front();
@@ -18,10 +14,6 @@ impl Compositor {
             .push_back(json!({"sequence": self.control_sequence, "data": data}));
     }
 
-    #[expect(
-        clippy::redundant_pub_crate,
-        reason = "observer is shared with the parent state module"
-    )]
     pub(super) fn observe_control_event(&mut self, event: &tehuti_protocol::Event) {
         let data = match event {
             tehuti_protocol::Event::Tick { .. } => return,
@@ -31,7 +23,7 @@ impl Compositor {
             tehuti_protocol::Event::Focus { app_id, .. } => json!({"kind": "focus", "app_id": app_id}),
             tehuti_protocol::Event::Speech { .. } => json!({"kind": "speech", "redacted": true}),
         };
-        self.push_control_event(data);
+        self.push_control_event(&data);
     }
 
     /// # Errors
@@ -41,7 +33,7 @@ impl Compositor {
         match command {
             Command::Status => {
                 return Ok(
-                    json!({"pid": std::process::id(), "version": env!("CARGO_PKG_VERSION"), "focus": self.placement.focused_destination(), "restart_requested": self.restart_requested}),
+                    json!({"pid": std::process::id(), "version": env!("CARGO_PKG_VERSION"), "focus": self.placement.focused_destination(), "app_id": self.focused_window_label().0, "restart_requested": self.restart_requested}),
                 );
             }
             Command::Windows => return Ok(self.control_windows()),
@@ -53,21 +45,21 @@ impl Compositor {
                 );
             }
             Command::Layout { action } => self.apply_layout(action),
-            Command::Focus { id } => {
+            Command::Focus { identity } => {
                 self.placement
-                    .focus_destination(id)
+                    .focus_destination(identity)
                     .map_err(|error| error.to_string())?;
                 self.place_layout();
             }
-            Command::Close { id } => {
-                let id = id
+            Command::Close { identity } => {
+                let identity = identity
                     .or_else(|| self.placement.focused_destination())
                     .ok_or("no focused window")?;
                 let key = self
                     .placement
                     .placed(|_| 0.0)
                     .into_iter()
-                    .find(|placed| placed.identity == id)
+                    .find(|placed| placed.identity == identity)
                     .map(|placed| placed.key.clone())
                     .ok_or("unknown window id")?;
                 self.remove_layout_window(&key, true);
@@ -95,11 +87,16 @@ impl Compositor {
                             .flat_map(|route| &route.steps)
                             .find_map(|step| match &step.target {
                                 crate::destinations::Target::Desktop(entry) => Some(entry.clone()),
-                                _ => None,
+                                crate::destinations::Target::Url(_)
+                                | crate::destinations::Target::Action(_)
+                                | crate::destinations::Target::Window(_)
+                                | crate::destinations::Target::Application(_)
+                                | crate::destinations::Target::Menu(_)
+                                | crate::destinations::Target::Workspace(_) => None,
                             })
                     })
                     .ok_or("unknown desktop application; raw commands require --command")?;
-                self.launcher.control_launch(crate::desktop::launch_for(
+                self.launcher.control_launch(&crate::desktop::launch_for(
                     &entry,
                     self.launch_socket.as_deref().ok_or("no compositor socket")?,
                 )?)?;
@@ -116,7 +113,7 @@ impl Compositor {
                 for argument in arguments {
                     launch = launch.arg(argument);
                 }
-                self.launcher.control_launch(launch)?;
+                self.launcher.control_launch(&launch)?;
             }
             Command::DisplayScale { scale } => {
                 if !(1..=8).contains(&scale)
@@ -188,9 +185,9 @@ impl Compositor {
             Command::ContextReload => {
                 let reload = crate::contexts::reload(directory)
                     .map_err(|_| "context directory unavailable".to_owned())?;
-                let skipped: Vec<_> = reload.skipped.iter().map(|error| error.path.clone()).collect();
+                let skipped = !reload.skipped.is_empty();
                 self.apply_reload(Ok(reload));
-                if !skipped.is_empty() {
+                if skipped {
                     return Err("invalid context files; last good versions retained".into());
                 }
                 return Ok(self.control_contexts());
@@ -250,9 +247,9 @@ impl Compositor {
 
     fn control_outputs(&self) -> Value {
         let outputs: Vec<_> = self.space.outputs().map(|output| {
-            let mode = output.current_mode().map(|mode| json!({"width": mode.size.w, "height": mode.size.h, "refresh_mhz": mode.refresh}));
+            let current = output.current_mode().map(|mode| json!({"width": mode.size.w, "height": mode.size.h, "refresh_mhz": mode.refresh}));
             let modes: Vec<_> = output.modes().iter().map(|mode| json!({"width": mode.size.w, "height": mode.size.h, "refresh_mhz": mode.refresh})).collect();
-            json!({"name": output.name(), "mode": mode, "modes": modes, "scale": output.current_scale().fractional_scale()})
+            json!({"name": output.name(), "mode": current, "modes": modes, "scale": output.current_scale().fractional_scale()})
         }).collect();
         json!(outputs)
     }

@@ -50,7 +50,7 @@ mod tests {
         )
         .unwrap();
         let runtime = root.path().join("runtime");
-        let applications = runtime.join("data/applications");
+        let applications = root.path().join("data/applications");
         std::fs::create_dir_all(&applications).unwrap();
         std::fs::write(
             applications.join("org.example.Editor.desktop"),
@@ -80,6 +80,7 @@ mod tests {
                 "320x240",
             ])
             .env("PATH", format!("{}:/usr/bin:/bin", bin.display()))
+            .env("XDG_DATA_DIRS", root.path().join("data"))
             .output()
             .unwrap();
         assert!(
@@ -273,13 +274,13 @@ mod windows {
         let second = Client::new(&display, false);
         second.paint(&mut display, &mut compositor, [30, 20, 10, 255]);
         let scene = driver.execute(&mut compositor, Request::Scene).unwrap();
-        let id = scene["windows"][0]["id"].as_u64().unwrap();
+        let identity = scene["windows"][0]["id"].as_u64().unwrap();
         let _reply = compositor
-            .control(Command::Focus { id }, directory.path())
+            .control(Command::Focus { identity }, directory.path())
             .unwrap();
         assert_eq!(
             driver.execute(&mut compositor, Request::Scene).unwrap()["focus"],
-            id
+            identity
         );
         let _reply = compositor
             .control(
@@ -295,11 +296,16 @@ mod windows {
             .unwrap();
         assert!(image::image_dimensions(path).unwrap().0 > 0);
         let _reply = compositor
-            .control(Command::Close { id: Some(id) }, directory.path())
+            .control(
+                Command::Close {
+                    identity: Some(identity),
+                },
+                directory.path(),
+            )
             .unwrap();
         assert!(
             compositor
-                .control(Command::Focus { id }, directory.path())
+                .control(Command::Focus { identity }, directory.path())
                 .is_err()
         );
         first.finish();

@@ -17,6 +17,21 @@ Every command accepts --help and --json. Events always emit NDJSON.
 /// # Errors
 /// Reports invalid arguments, unavailable commands and session errors.
 pub fn run(arguments: Vec<OsString>, output: &mut impl Write) -> Result<(), Box<dyn core::error::Error>> {
+    let json = arguments.iter().any(|argument| argument == "--json");
+    let result = run_inner(arguments, output);
+    if let Err(error) = &result
+        && json
+    {
+        writeln!(
+            output,
+            "{}",
+            serde_json::json!({"v": 1, "error": error.to_string()})
+        )?;
+    }
+    result
+}
+
+fn run_inner(arguments: Vec<OsString>, output: &mut impl Write) -> Result<(), Box<dyn core::error::Error>> {
     let mut words = arguments
         .into_iter()
         .map(|word| word.into_string().map_err(|_| "ctl requires UTF-8 arguments"))
@@ -53,14 +68,16 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
         ["layout", action] => serde_json::from_value(serde_json::json!(action))
             .map(|action| Command::Layout { action })
             .map_err(|error| error.to_string()),
-        ["focus", id] => id
+        ["focus", identity] => identity
             .parse()
-            .map(|id| Command::Focus { id })
+            .map(|identity| Command::Focus { identity })
             .map_err(|_| "focus requires a window id".into()),
-        ["close"] => Ok(Command::Close { id: None }),
-        ["close", id] => id
+        ["close"] => Ok(Command::Close { identity: None }),
+        ["close", identity] => identity
             .parse()
-            .map(|id| Command::Close { id: Some(id) })
+            .map(|identity| Command::Close {
+                identity: Some(identity),
+            })
             .map_err(|_| "close requires a window id".into()),
         ["launch", "--command", program, arguments @ ..] if !program.is_empty() => {
             Ok(Command::LaunchCommand {
@@ -117,8 +134,8 @@ fn not_yet(group: &str) -> String {
         "update" => 923,
         "help-overlay" => 924,
         "toggle" | "toggles" | "bar" => 925,
-        "wallpaper" => 926,
-        "settings" => 927,
+        "wallpaper" => 928,
+        "settings" => 928,
         "session" => 341,
         _ => 928,
     };

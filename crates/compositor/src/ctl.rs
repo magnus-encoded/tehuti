@@ -17,7 +17,8 @@ const LIMIT: usize = 65_536;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct Request {
-    pub v: u8,
+    #[serde(rename = "v")]
+    pub version: u8,
     pub command: Command,
 }
 
@@ -29,20 +30,45 @@ pub enum Command {
     Workspaces,
     Outputs,
     Events,
-    Layout { action: tehuti_protocol::LayoutAction },
-    Focus { id: u64 },
-    Close { id: Option<u64> },
-    Launch { app: String },
-    LaunchCommand { program: String, arguments: Vec<String> },
-    Notice { text: String },
-    DisplayMode { mode: String },
-    DisplayScale { scale: u32 },
-    Shot { path: PathBuf },
-    ShotWindow { path: PathBuf },
+    Layout {
+        action: tehuti_protocol::LayoutAction,
+    },
+    Focus {
+        #[serde(rename = "id")]
+        identity: u64,
+    },
+    Close {
+        #[serde(rename = "id")]
+        identity: Option<u64>,
+    },
+    Launch {
+        app: String,
+    },
+    LaunchCommand {
+        program: String,
+        arguments: Vec<String>,
+    },
+    Notice {
+        text: String,
+    },
+    DisplayMode {
+        mode: String,
+    },
+    DisplayScale {
+        scale: u32,
+    },
+    Shot {
+        path: PathBuf,
+    },
+    ShotWindow {
+        path: PathBuf,
+    },
     ContextList,
     ContextActive,
     ContextReload,
-    ContextCheck { path: Option<PathBuf> },
+    ContextCheck {
+        path: Option<PathBuf>,
+    },
     PluginList,
     SessionRestart,
 }
@@ -96,13 +122,13 @@ impl Server {
                 "control directory must be private and owned by the session user",
             ));
         }
-        if let Ok(metadata) = std::fs::symlink_metadata(&path) {
-            if !metadata.file_type().is_socket() {
+        if let Ok(socket_metadata) = std::fs::symlink_metadata(&path) {
+            if !socket_metadata.file_type().is_socket() {
                 return Err(io::Error::other("control path is not a socket"));
             }
             match UnixStream::connect(&path) {
                 Err(error) if error.kind() == io::ErrorKind::ConnectionRefused => {
-                    std::fs::remove_file(&path)?
+                    std::fs::remove_file(&path)?;
                 }
                 _ => return Err(io::Error::other("another session owns the control socket")),
             }
@@ -148,9 +174,20 @@ fn same_user(stream: &UnixStream) -> bool {
         .is_ok_and(|credentials| credentials.uid == rustix::process::getuid())
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "bounded framing, execution and partial writes share one peer lifetime"
+)]
 fn service(peer: &mut Peer, execute: &mut impl FnMut(Command) -> Result<Value, String>) -> bool {
     if peer.started.elapsed() > Duration::from_secs(5) && (!peer.events || !peer.output.is_empty()) {
         return false;
+    }
+    if peer.events {
+        let mut probe = [0; 1];
+        match peer.stream.read(&mut probe) {
+            Err(error) if error.kind() == io::ErrorKind::WouldBlock => {}
+            _ => return false,
+        }
     }
     if peer.output.is_empty() {
         if peer.events {
@@ -184,7 +221,7 @@ fn service(peer: &mut Peer, execute: &mut impl FnMut(Command) -> Result<Value, S
             let result = serde_json::from_slice::<Request>(peer.input.get(..end).unwrap_or_default())
                 .map_err(|_| "invalid ctl request".to_owned())
                 .and_then(|request| {
-                    if request.v != 1 {
+                    if request.version != 1 {
                         return Err("unsupported ctl version".into());
                     }
                     peer.events = matches!(request.command, Command::Events);
@@ -245,7 +282,7 @@ pub fn send(path: &Path, command: Command, output: &mut impl Write) -> io::Resul
     if !events {
         stream.set_read_timeout(Some(Duration::from_secs(6)))?;
     }
-    serde_json::to_writer(&mut stream, &Request { v: 1, command })?;
+    serde_json::to_writer(&mut stream, &Request { version: 1, command })?;
     stream.write_all(b"\n")?;
     let mut reader = io::BufReader::new(stream);
     loop {
