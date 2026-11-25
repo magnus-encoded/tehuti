@@ -160,6 +160,8 @@ pub struct Compositor {
     notice_until: Option<Instant>,
     taps: tehuti_core::tap_hold::TapHold<Keycode>,
     notice_text: Option<String>,
+    info_notice: InfoNotice,
+    quick_info: crate::quick_info::Source,
     recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
     launcher: crate::launcher::Session,
@@ -215,6 +217,13 @@ pub struct Compositor {
     display: DisplayHandle,
     /// Commits held back because their client buffer is not ready yet.
     waiting_buffers: crate::buffer_gate::Waiting,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+enum InfoNotice {
+    #[default]
+    Idle,
+    Active,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -333,6 +342,8 @@ impl Compositor {
             notice_until: None,
             taps: tehuti_core::tap_hold::TapHold::default(),
             notice_text: None,
+            info_notice: InfoNotice::Idle,
+            quick_info: crate::quick_info::Source::system(),
             recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
             launcher: crate::launcher::Session::new()?,
@@ -2330,6 +2341,8 @@ impl Compositor {
             | DispatchEffect::ListRemoteHosts
             | DispatchEffect::ConnectRemoteMicrophone { .. }
             | DispatchEffect::PasswordSpeechIgnored
+            | DispatchEffect::ShowInfo(_)
+            | DispatchEffect::DismissInfo
             | DispatchEffect::RunMenuCommand(_)
             | DispatchEffect::MovePointer { .. }
             | DispatchEffect::Scroll { .. }
@@ -2664,6 +2677,8 @@ impl Compositor {
             DispatchEffect::PasswordSpeechIgnored => {
                 tracing::info!("push-to-talk ignored: password field active");
             }
+            DispatchEffect::ShowInfo(item) => self.show_info_notice(item),
+            DispatchEffect::DismissInfo => self.dismiss_info_notice(),
             DispatchEffect::RunMenuCommand(command) => self.run_menu_command(command),
             DispatchEffect::MovePointer { x, y } => {
                 self.record_event("pointer_motion", &serde_json::json!({"x": x, "y": y}));
@@ -2915,8 +2930,8 @@ impl Compositor {
                 self.show_notice(text.as_str());
             }
             Action::ToggleTicker => self.dispatch.core_mut().toggle_ticker(),
-            // The core expands it into backspaces before any action reaches here.
-            Action::UndoDictation => {}
+            // The core expands these before any action reaches here.
+            Action::UndoDictation | Action::CycleInfo => {}
         }
     }
 
@@ -2945,8 +2960,27 @@ impl Compositor {
         self.recording_failure = Some(format!("RECORDING FAILED: {error}\nESC OR B TO DISMISS"));
     }
 
+    /// Replaces the quick info clock and battery source, for tests without hardware.
+    pub fn set_quick_info_source(&mut self, source: crate::quick_info::Source) {
+        self.quick_info = source;
+    }
+
+    fn show_info_notice(&mut self, item: tehuti_core::quick_info::InfoItem) {
+        let text = self.quick_info.notice(item);
+        self.show_notice(&text);
+        self.info_notice = InfoNotice::Active;
+    }
+
+    fn dismiss_info_notice(&mut self) {
+        if core::mem::take(&mut self.info_notice) == InfoNotice::Active {
+            self.notice_text = None;
+            self.notice_until = None;
+        }
+    }
+
     fn show_notice(&mut self, text: &str) {
         let _effect = self.placement.window_action(tehuti_core::windows::Input::Notify);
+        self.info_notice = InfoNotice::Idle;
         self.notice_text = Some(text.into());
         self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
     }

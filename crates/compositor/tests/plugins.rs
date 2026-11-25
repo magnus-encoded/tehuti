@@ -350,6 +350,8 @@ for line in sys.stdin:
             | Effect::SetWindowSize { .. }
             | Effect::SetVolume(_)
             | Effect::AdjusterValue { .. }
+            | Effect::ShowInfo(_)
+            | Effect::DismissInfo
             | Effect::RunMenuCommand(_)
             | Effect::SettingsMode(_)
             | Effect::PersistMode(_)

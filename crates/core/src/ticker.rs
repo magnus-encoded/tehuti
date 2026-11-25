@@ -239,6 +239,7 @@ pub fn action_text(action: &Action) -> String {
         Action::Layout { action } => layout_text(*action).into(),
         Action::ToggleTicker => "Ticker".into(),
         Action::UndoDictation => "Undo".into(),
+        Action::CycleInfo => "Info".into(),
     }
 }
 
@@ -309,7 +310,8 @@ pub fn action_pieces(action: &Action) -> Vec<Piece> {
         | Action::Restart
         | Action::Layout { .. }
         | Action::ToggleTicker
-        | Action::UndoDictation => vec![Piece::Text(action_text(action))],
+        | Action::UndoDictation
+        | Action::CycleInfo => vec![Piece::Text(action_text(action))],
     }
 }
 
@@ -597,7 +599,8 @@ fn key_name<'context>(context: &'context Context, action: &Action) -> Option<&'c
         | Action::Restart
         | Action::Layout { .. }
         | Action::ToggleTicker
-        | Action::UndoDictation => None,
+        | Action::UndoDictation
+        | Action::CycleInfo => None,
     }
 }
 

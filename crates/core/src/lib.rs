@@ -113,7 +113,8 @@ impl State {
                 | Action::Notice { .. }
                 | Action::Layout { .. }
                 | Action::KeyUp { .. }
-                | Action::ToggleTicker => tracked.push(action),
+                | Action::ToggleTicker
+                | Action::CycleInfo => tracked.push(action),
             }
         }
         tracked
@@ -807,7 +808,7 @@ const NO_MAPPING_NOTICE: &str = "NO SPEECH MAPPING";
 /// mapping, built-in or fuzzy match takes the phrase.
 #[must_use]
 pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<String>> {
-    if phrase.trim().is_empty() {
+    if phrase.trim().is_empty() || quick_info::from_phrase(phrase).is_some() {
         return None;
     }
     let focused = focused_context(state);
@@ -998,6 +999,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         }
         let phrase = text.as_str();
         if unit_verbs::launcher_request(phrase).is_some()
+            || quick_info::from_phrase(phrase).is_some()
             || matches!(
                 tehuti_protocol::normalize_phrase(phrase).as_str(),
                 "start recording" | "stop recording"
@@ -1314,6 +1316,7 @@ pub mod bar;
 pub mod overlay;
 pub mod ownership;
 pub mod pad;
+pub mod quick_info;
 pub mod ticker;
 pub mod vpad;
 

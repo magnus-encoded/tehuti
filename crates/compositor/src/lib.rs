@@ -27,6 +27,7 @@ pub mod say;
 pub mod speech;
 
 pub mod notice;
+pub mod quick_info;
 
 pub mod secret_confirmation;
 pub mod secret_delivery;

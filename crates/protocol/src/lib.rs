@@ -1046,7 +1046,8 @@ impl Context {
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
             | MappingAction::Ticker { .. }
-            | MappingAction::UndoDictation { .. } => None,
+            | MappingAction::UndoDictation { .. }
+            | MappingAction::Info { .. } => None,
         })
     }
 
@@ -1069,7 +1070,8 @@ impl Context {
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
             | MappingAction::Ticker { .. }
-            | MappingAction::UndoDictation { .. } => None,
+            | MappingAction::UndoDictation { .. }
+            | MappingAction::Info { .. } => None,
         }
     }
 }
@@ -1168,6 +1170,9 @@ enum MappingAction {
     UndoDictation {
         undo_dictation: UndoDictationMapping,
     },
+    Info {
+        info: InfoMapping,
+    },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1220,6 +1225,12 @@ enum TickerMapping {
     Toggle,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+enum InfoMapping {
+    #[serde(rename = "cycle")]
+    Cycle,
+}
+
 impl MappingAction {
     fn action(&self) -> Action {
         match self {
@@ -1240,6 +1251,7 @@ impl MappingAction {
             Self::Layout { layout } => Action::Layout { action: *layout },
             Self::Ticker { .. } => Action::ToggleTicker,
             Self::UndoDictation { .. } => Action::UndoDictation,
+            Self::Info { .. } => Action::CycleInfo,
         }
     }
 }
@@ -1557,6 +1569,11 @@ fn speech_entry(
             "speech phrase {mapped:?} cannot hold a key; hold is for buttons"
         ));
     }
+    if matches!(entry.action, MappingAction::Info { .. }) {
+        return Err(format!(
+            "speech phrase {mapped:?} cannot cycle info; steps belong on the controller"
+        ));
+    }
     record_launch_phrase(launch_phrases, &entry.action, mapped);
     speech_templates::validate(mapped, &entry.action)?;
     Ok(SpeechEntry {
@@ -1646,6 +1663,8 @@ pub enum Action {
     /// Delete the last dictated phrase, or one character once anything else was typed; the core expands it
     /// into backspaces, so it never reaches the compositor.
     UndoDictation,
+    /// Cycle the quick info notice through time, date and battery; reserved for the core.
+    CycleInfo,
 }
 
 /// A tiling action a context maps to a button or phrase, written in kebab case,

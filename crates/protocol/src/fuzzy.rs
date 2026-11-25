@@ -124,7 +124,8 @@ pub fn destructive(action: &Action) -> bool {
         | Action::Notice { .. }
         | Action::Layout { .. }
         | Action::ToggleTicker
-        | Action::UndoDictation => false,
+        | Action::UndoDictation
+        | Action::CycleInfo => false,
     }
 }
 
