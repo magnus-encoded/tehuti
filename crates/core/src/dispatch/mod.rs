@@ -393,6 +393,12 @@ impl State {
         &mut self.core
     }
 
+    /// Whether a transcript maps to nothing; see [`crate::speech_falls_through`].
+    #[must_use]
+    pub fn speech_falls_through(&self, phrase: &str) -> bool {
+        crate::speech_falls_through(&self.core, phrase)
+    }
+
     /// The phrases a model may choose from for a transcript that matches nothing; see
     /// [`crate::unmatched_speech_commands`].
     #[must_use]
