@@ -69,13 +69,12 @@ mod quick_info {
         }
     }
 
-    fn run(mut state: DispatchState, input: Input) -> (DispatchState, Vec<Effect>) {
+    fn run(initial: DispatchState, input: Input) -> (DispatchState, Vec<Effect>) {
         let mut trace = Vec::new();
-        let (next, mut effects) = dispatch_step(state, input);
-        state = next;
+        let (mut state, mut effects) = dispatch_step(initial, input);
         while !effects.is_empty() || state.busy() > 0 {
             let mut reply = None;
-            for effect in effects.drain(..) {
+            for effect in effects {
                 reply = reply_for(&effect);
                 trace.push(effect);
                 if reply.is_some() {
@@ -85,9 +84,7 @@ mod quick_info {
             if state.busy() == 0 {
                 break;
             }
-            let (next, more) = dispatch_step(state, reply.unwrap_or(Input::Resume));
-            state = next;
-            effects = more;
+            (state, effects) = dispatch_step(state, reply.unwrap_or(Input::Resume));
         }
         (state, trace)
     }

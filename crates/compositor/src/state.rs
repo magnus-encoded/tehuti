@@ -160,7 +160,7 @@ pub struct Compositor {
     notice_until: Option<Instant>,
     taps: tehuti_core::tap_hold::TapHold<Keycode>,
     notice_text: Option<String>,
-    info_notice_active: bool,
+    info_notice: InfoNotice,
     quick_info: crate::quick_info::Source,
     recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
@@ -217,6 +217,13 @@ pub struct Compositor {
     display: DisplayHandle,
     /// Commits held back because their client buffer is not ready yet.
     waiting_buffers: crate::buffer_gate::Waiting,
+}
+
+#[derive(Debug, Default, PartialEq, Eq)]
+enum InfoNotice {
+    #[default]
+    Idle,
+    Active,
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -335,7 +342,7 @@ impl Compositor {
             notice_until: None,
             taps: tehuti_core::tap_hold::TapHold::default(),
             notice_text: None,
-            info_notice_active: false,
+            info_notice: InfoNotice::Idle,
             quick_info: crate::quick_info::Source::system(),
             recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
@@ -2961,11 +2968,11 @@ impl Compositor {
     fn show_info_notice(&mut self, item: tehuti_core::quick_info::InfoItem) {
         let text = self.quick_info.notice(item);
         self.show_notice(&text);
-        self.info_notice_active = true;
+        self.info_notice = InfoNotice::Active;
     }
 
     fn dismiss_info_notice(&mut self) {
-        if core::mem::take(&mut self.info_notice_active) {
+        if core::mem::take(&mut self.info_notice) == InfoNotice::Active {
             self.notice_text = None;
             self.notice_until = None;
         }
@@ -2973,7 +2980,7 @@ impl Compositor {
 
     fn show_notice(&mut self, text: &str) {
         let _effect = self.placement.window_action(tehuti_core::windows::Input::Notify);
-        self.info_notice_active = false;
+        self.info_notice = InfoNotice::Idle;
         self.notice_text = Some(text.into());
         self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
     }
