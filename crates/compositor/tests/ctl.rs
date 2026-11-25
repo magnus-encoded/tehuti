@@ -1,12 +1,13 @@
 #[cfg(test)]
 mod tests {
+    use core::time::Duration;
     use serde_json::{Value, json};
     use std::{
         io::{Read, Write},
         os::unix::net::UnixStream,
         path::Path,
         process::{Command, Output},
-        time::{Duration, Instant},
+        time::Instant,
     };
 
     #[derive(Debug)]
@@ -157,7 +158,7 @@ mod tests {
             assert!(!ctl(&socket, &["launch", "/bin/true"]).status.success());
             assert!(!ctl(&socket, &["launch", "missing.desktop"]).status.success());
             let marker = root.path().join("launched");
-            ok(
+            query(
                 &socket,
                 &["launch", "--command", "/usr/bin/touch", marker.to_str().unwrap()],
             );
@@ -395,11 +396,8 @@ mod windows {
 
 #[cfg(test)]
 mod credentials {
-    use std::{
-        os::unix::fs::PermissionsExt,
-        process::Command,
-        time::{Duration, Instant},
-    };
+    use core::time::Duration;
+    use std::{os::unix::fs::PermissionsExt, process::Command, time::Instant};
 
     #[test]
     fn a_different_uid_is_rejected_even_with_filesystem_access() {
@@ -414,7 +412,24 @@ mod credentials {
         ] {
             std::fs::set_permissions(accessible, std::fs::Permissions::from_mode(mode)).unwrap();
         }
-        let mut child = Command::new("sudo").args(["-n", "-u", "nobody", "python3", "-c", "import socket,sys; s=socket.socket(socket.AF_UNIX); s.settimeout(3); s.connect(sys.argv[1]); s.sendall(b'{\"v\":1,\"command\":{\"name\":\"status\"}}\\n');\ntry: data=s.recv(1024)\nexcept ConnectionResetError: data=b''\nassert data == b'', data"]).arg(&path).spawn().unwrap();
+        let script = r#"import os,socket,sys
+assert os.getuid() != int(sys.argv[2])
+stream=socket.socket(socket.AF_UNIX)
+stream.settimeout(3)
+stream.connect(sys.argv[1])
+try:
+    stream.sendall(b'{"v":1,"command":{"name":"status"}}\n')
+    data=stream.recv(1024)
+except (ConnectionResetError,BrokenPipeError):
+    data=b''
+assert data == b'', data
+"#;
+        let mut child = Command::new("sudo")
+            .args(["-n", "-u", "nobody", "python3", "-c", script])
+            .arg(&path)
+            .arg(rustix::process::getuid().as_raw().to_string())
+            .spawn()
+            .unwrap();
         let deadline = Instant::now() + Duration::from_secs(5);
         let mut called = false;
         while child.try_wait().unwrap().is_none() && Instant::now() < deadline {

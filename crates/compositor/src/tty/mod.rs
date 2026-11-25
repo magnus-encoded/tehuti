@@ -623,17 +623,12 @@ impl tehuti::frame_recovery::Frames<LoopData> for Tty {
         data: &mut LoopData,
         tick: bool,
     ) -> Result<Option<std::time::Instant>, Box<dyn Error>> {
-        if !data.seat_active || !self.device.is_active() {
-            return Ok(None);
-        }
-        if self.rescan_pending {
-            self.rescan(data);
-        }
-        if self.scanout.as_ref().is_none_or(|scanout| !scanout.pending)
-            && let Some(mut control) = data.control.take()
-        {
+        if let Some(mut control) = data.control.take() {
             control.poll(|command| {
                 if let tehuti::ctl::Command::DisplayMode { mode } = command {
+                    if !data.seat_active || !self.device.is_active() {
+                        return Err("seat is inactive".into());
+                    }
                     let request = tehuti::output_mode::Request::parse(&mode).ok_or("invalid output mode")?;
                     self.scanout
                         .as_mut()
@@ -645,6 +640,12 @@ impl tehuti::frame_recovery::Frames<LoopData> for Tty {
                 }
             });
             data.control = Some(control);
+        }
+        if !data.seat_active || !self.device.is_active() {
+            return Ok(None);
+        }
+        if self.rescan_pending {
+            self.rescan(data);
         }
         match &mut self.scanout {
             Some(scanout) => scanout.render(&self.device, data, tick),

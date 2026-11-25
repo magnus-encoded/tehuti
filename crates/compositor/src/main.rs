@@ -671,6 +671,18 @@ fn start_watchdog(data: &LoopData) -> Option<tehuti::watchdog::Heartbeat> {
         .ok()
 }
 
+fn poll_test_session(data: &mut LoopData, signal: &calloop::LoopSignal) {
+    if data.driver.is_some() {
+        poll_nested_control(data);
+    }
+    if let Some(driver) = data.driver.as_mut() {
+        driver.poll(&mut data.compositor);
+        if driver.stopped() {
+            signal.stop();
+        }
+    }
+}
+
 fn run(
     event_loop: &mut EventLoop<LoopData>,
     data: &mut LoopData,
@@ -683,15 +695,7 @@ fn run(
     let result = event_loop.run(Some(tehuti::pacing::LOOP_TIMEOUT), data, |data| {
         heartbeat.iter().for_each(tehuti::watchdog::Heartbeat::beat);
         termination.stop_if_requested(&signal);
-        if data.driver.is_some() {
-            poll_nested_control(data);
-        }
-        if let Some(driver) = data.driver.as_mut() {
-            driver.poll(&mut data.compositor);
-            if driver.stopped() {
-                signal.stop();
-            }
-        }
+        poll_test_session(data, &signal);
         if matches!(data.frames, Frames::Headless) {
             if let Some(output) = data.compositor.output.as_ref() {
                 for window in data.compositor.space.elements() {
