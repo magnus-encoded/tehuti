@@ -114,9 +114,9 @@ fn combine_batteries(batteries: &[Battery]) -> Option<Battery> {
     if count == 0 {
         return None;
     }
-    let total = batteries
-        .iter()
-        .fold(0u64, |sum, battery| sum.saturating_add(u64::from(battery.percent())));
+    let total = batteries.iter().fold(0u64, |sum, battery| {
+        sum.saturating_add(u64::from(battery.percent()))
+    });
     let average = total.checked_div(count)?;
     let percent = u8::try_from(average).ok()?;
     let status = if batteries

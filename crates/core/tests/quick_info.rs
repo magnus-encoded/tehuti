@@ -318,7 +318,9 @@ mod quick_info {
         assert!(state.keyboard().is_open(), "keyboard should be open");
         let (state, dictated) = say(state, "battery");
         assert!(
-            !dictated.iter().any(|effect| matches!(effect, Effect::ShowInfo(_))),
+            !dictated
+                .iter()
+                .any(|effect| matches!(effect, Effect::ShowInfo(_))),
             "open keyboard must dictate rather than show info: {dictated:?}"
         );
         assert!(

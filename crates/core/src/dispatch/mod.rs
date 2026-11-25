@@ -2128,8 +2128,7 @@ fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>)
         effects.push(Effect::Apply(release));
     }
     if state.core.passthrough() {
-        if adjuster_phrase(state, &event, false, effects)
-            || quick_info_phrase(state, &event, false, effects)
+        if adjuster_phrase(state, &event, false, effects) || quick_info_phrase(state, &event, false, effects)
         {
             return;
         }
