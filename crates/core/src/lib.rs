@@ -452,6 +452,7 @@ impl State {
             *current = words;
         } else if !words.is_empty() {
             self.plugin_invoke_words.push((plugin, words));
+            self.plugin_invoke_words.sort_by_key(|(owner, _)| *owner);
         }
     }
 
