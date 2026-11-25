@@ -792,12 +792,11 @@ impl Compositor {
     }
 
     pub(crate) fn refresh_speech_vocabulary(&mut self) {
-        let invoke_words = self
-            .speech_context
-            .as_deref()
-            .zip(self.plugins.as_ref())
-            .map_or_default(|(app_id, plugins)| plugins.invoke_words(app_id));
-        self.dispatch.core_mut().set_plugin_invoke_words(invoke_words);
+        if let Some(plugins) = &self.plugins {
+            for (plugin, words) in plugins.invoke_words(self.speech_context.as_deref()) {
+                self.dispatch.core_mut().set_plugin_invoke_words(plugin, words);
+            }
+        }
         if self.speech_process.is_some() {
             let words = self.destination_vocabulary();
             if let Some(process) = &mut self.speech_process

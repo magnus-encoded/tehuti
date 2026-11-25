@@ -182,18 +182,22 @@ impl Plugins {
             .find_map(|entry| entry.session.as_ref()?.borrow().status_text.clone())
     }
 
-    /// Invoke words of the initialized application plugins that cover `app_id`, in manifest order.
-    pub(crate) fn invoke_words(&self, app_id: &str) -> Vec<(usize, Vec<String>)> {
+    /// Each plugin's invoke words for the focus, empty when it is not ready or does not cover it.
+    pub(crate) fn invoke_words(&self, app_id: Option<&str>) -> Vec<(usize, Vec<String>)> {
         self.entries
             .iter()
-            .filter(|entry| {
-                entry.manifest.kind == PluginKind::Application
-                    && entry.manifest.app_ids.iter().any(|name| name == app_id)
+            .map(|entry| {
+                let words = entry.session.as_ref().filter(|session| {
+                    entry.manifest.kind == PluginKind::Application
+                        && app_id
+                            .is_some_and(|app_id| entry.manifest.app_ids.iter().any(|name| name == app_id))
+                        && session.borrow().status == Status::Ready
+                });
+                (
+                    entry.plugin,
+                    words.map_or_else(Vec::new, |session| session.borrow().invoke_words.clone()),
+                )
             })
-            .filter_map(|entry| entry.session.as_ref().map(|session| (entry.plugin, session)))
-            .filter(|(_, session)| session.borrow().status == Status::Ready)
-            .map(|(plugin, session)| (plugin, session.borrow().invoke_words.clone()))
-            .filter(|(_, words)| !words.is_empty())
             .collect()
     }
 
@@ -1600,12 +1604,19 @@ mod tests {
                 "a notice refreshes the focused window's words"
             );
             assert_eq!(
-                plugins.invoke_words("test"),
+                plugins
+                    .invoke_words(Some("test"))
+                    .into_iter()
+                    .filter(|(_, words)| !words.is_empty())
+                    .collect::<Vec<_>>(),
                 [(1, vec!["usage".to_owned()])],
                 "the second list replaces"
             );
             assert!(
-                plugins.invoke_words("other").is_empty(),
+                plugins
+                    .invoke_words(Some("other"))
+                    .iter()
+                    .all(|(_, words)| words.is_empty()),
                 "only covered applications"
             );
         }

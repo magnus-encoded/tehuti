@@ -442,9 +442,17 @@ impl State {
             .collect()
     }
 
-    /// Replaces the extra invoke words application plugins supply for the focused window, per plugin.
-    pub fn set_plugin_invoke_words(&mut self, words: Vec<(usize, Vec<String>)>) {
-        self.plugin_invoke_words = words;
+    /// Replaces one plugin's extra invoke words for the focused window.
+    pub fn set_plugin_invoke_words(&mut self, plugin: usize, words: Vec<String>) {
+        if let Some((_, current)) = self
+            .plugin_invoke_words
+            .iter_mut()
+            .find(|(owner, _)| *owner == plugin)
+        {
+            *current = words;
+        } else if !words.is_empty() {
+            self.plugin_invoke_words.push((plugin, words));
+        }
     }
 
     /// Supplies each application's desktop entry `Name`, keyed by app id.

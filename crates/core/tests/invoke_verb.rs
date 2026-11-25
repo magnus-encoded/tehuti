@@ -100,12 +100,32 @@ mod invoke_verb {
     #[test]
     fn plugin_words_snap_like_context_words_and_replace_on_each_set() {
         let mut state = focused("app_id = 'editor'\n[buttons]\n");
-        state.set_plugin_invoke_words(vec![(0, vec!["changelog".into()])]);
+        state.set_plugin_invoke_words(0, vec!["changelog".into()]);
         let (mut state, first) = step(state, &speech("Invoke change log."));
         assert_eq!(first, typed("/changelog "), "a plugin word snaps");
-        state.set_plugin_invoke_words(Vec::new());
+        state.set_plugin_invoke_words(0, Vec::new());
         let (_, second) = step(state, &speech("Invoke change log"));
         assert_eq!(second, typed("/change-log "), "an emptied list snaps nothing");
+    }
+
+    #[test]
+    fn refreshing_or_clearing_one_plugins_words_preserves_the_others() {
+        let mut state = State::default();
+        state.set_plugin_invoke_words(0, vec!["changelog".into()]);
+        state.set_plugin_invoke_words(1, vec!["code-review".into()]);
+        state.set_plugin_invoke_words(0, vec!["usage-report".into()]);
+        let (mut state, refreshed) = step(state, &speech("invoke usage raport"));
+        assert_eq!(refreshed, typed("/usage-report "));
+        let (state, removed) = step(state, &speech("invoke change log"));
+        assert_eq!(removed, typed("/change-log "));
+        let (next, other) = step(state, &speech("invoke code review"));
+        assert_eq!(other, typed("/code-review "));
+        state = next;
+        state.set_plugin_invoke_words(0, Vec::new());
+        let (state, cleared) = step(state, &speech("invoke usage raport"));
+        assert_eq!(cleared, typed("/usage-raport "));
+        let (_, other) = step(state, &speech("invoke code review"));
+        assert_eq!(other, typed("/code-review "));
     }
 
     #[test]

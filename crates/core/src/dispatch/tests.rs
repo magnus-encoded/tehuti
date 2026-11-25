@@ -6526,3 +6526,109 @@ fn restoring_clears_what_the_saved_files_no_longer_hold() {
     );
     assert!(state.settings().input.pads.is_empty());
 }
+
+#[test]
+fn guide_dpad_chords_outrank_dpad_talk_buttons_outside_passthrough() {
+    use crate::ownership::{Owner, Phase, Why};
+    use tehuti_protocol::LayoutAction;
+
+    for (button, action) in [
+        (ButtonName::DpadUp, LayoutAction::FocusWorkspaceUp),
+        (ButtonName::DpadDown, LayoutAction::FocusWorkspaceDown),
+        (ButtonName::DpadLeft, LayoutAction::FocusColumnLeft),
+        (ButtonName::DpadRight, LayoutAction::FocusColumnRight),
+    ] {
+        let mut state = configured(Vec::new(), "app");
+        state.core_mut().set_controller_push_to_talk(Some(button));
+        let mut world = World {
+            plugin_active: true,
+            ..World::default()
+        };
+        state = world.run(state, Input::Speech(SpeechInput::Available));
+        state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+        assert_eq!(
+            crate::ownership::owner(&state.core().ownership_view(true), button, Phase::Pressed),
+            Owner::Tehuti(Why::GuideDpadChord),
+        );
+        world.trace.clear();
+        state = world.run(state, pad_button(button, ButtonState::Pressed));
+        assert!(world.trace.contains(&Effect::Apply(Action::Layout { action })));
+        assert!(
+            !world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::SpeechCommand(_) | Effect::DispatchPlugin { .. }))
+        );
+        world.trace.clear();
+        state = world.run(state, pad_button(button, ButtonState::Released));
+        let _state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Released));
+        assert!(!world.trace.iter().any(|effect| matches!(
+            effect,
+            Effect::SpeechCommand(_) | Effect::Apply(_) | Effect::DispatchPlugin { .. }
+        )));
+    }
+}
+
+#[test]
+fn passthrough_talk_ownership_matches_dispatch_on_press_and_release() {
+    use crate::ownership::{Owner, Phase, TalkSource};
+
+    for guide in [false, true] {
+        for button in [ButtonName::Select, ButtonName::Record, ButtonName::DpadUp] {
+            let context =
+                tehuti_protocol::parse_context("app_id = 'app'\n[buttons]\n[pad]\npassthrough = true")
+                    .unwrap();
+            let mut state = configured(vec![context], "app");
+            state.core_mut().set_controller_push_to_talk(Some(button));
+            let mut world = World {
+                plugin_active: true,
+                ..World::default()
+            };
+            state = world.run(state, Input::Speech(SpeechInput::Available));
+            if guide {
+                state = world.run(state, pad_button(ButtonName::Guide, ButtonState::Pressed));
+            }
+            world.trace.clear();
+            for (phase, button_state, command) in [
+                (
+                    Phase::Pressed,
+                    ButtonState::Pressed,
+                    SpeechEffect::Start { session: 0 },
+                ),
+                (
+                    Phase::Released,
+                    ButtonState::Released,
+                    SpeechEffect::Stop {
+                        session: 0,
+                        transcribe: true,
+                    },
+                ),
+            ] {
+                assert_eq!(
+                    crate::ownership::owner(&state.core().ownership_view(true), button, phase),
+                    Owner::Talk(TalkSource::Controller),
+                );
+                state = world.run(state, pad_button(button, button_state));
+                let commands: Vec<_> = world
+                    .trace
+                    .iter()
+                    .filter_map(|effect| {
+                        if let Effect::SpeechCommand(command) = effect {
+                            Some(command.clone())
+                        } else {
+                            None
+                        }
+                    })
+                    .collect();
+                assert_eq!(commands, [command]);
+                assert!(
+                    !world
+                        .trace
+                        .iter()
+                        .any(|effect| matches!(effect, Effect::Apply(_) | Effect::DispatchPlugin { .. }))
+                );
+                world.trace.clear();
+            }
+        }
+    }
+}
