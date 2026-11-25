@@ -255,10 +255,10 @@ mod recording {
                 "confirm runs selected capture command"
             );
             let state = open_capture_chord(state);
-            let (state, effects) = tap_button(state, back);
+            let (state, cancel_effects) = tap_button(state, back);
             assert!(state.choice_list().is_none(), "back closes capture choice");
             assert!(
-                !effects
+                !cancel_effects
                     .iter()
                     .any(|effect| matches!(effect, Effect::RunMenuCommand(_))),
                 "back runs no capture command"

@@ -2390,18 +2390,11 @@ impl Compositor {
             self.stop_recording();
             return;
         }
-        if command == tehuti_core::menu::Command::Screenshot {
-            match crate::screenshot::save(self) {
-                Ok(path) => self.show_notice(&format!("SCREENSHOT SAVED: {}", path.display())),
-                Err(error) => self.show_notice(&format!("SCREENSHOT FAILED: {error}")),
-            }
-            return;
-        }
-        if command == tehuti_core::menu::Command::ScreenshotWindow {
-            match crate::screenshot::save_window(self) {
-                Ok(path) => self.show_notice(&format!("SCREENSHOT SAVED: {}", path.display())),
-                Err(error) => self.show_notice(&format!("SCREENSHOT FAILED: {error}")),
-            }
+        if matches!(
+            command,
+            tehuti_core::menu::Command::Screenshot | tehuti_core::menu::Command::ScreenshotWindow
+        ) {
+            self.save_screenshot(command == tehuti_core::menu::Command::ScreenshotWindow);
             return;
         }
         if command == tehuti_core::menu::Command::Restart {
@@ -2438,6 +2431,18 @@ impl Compositor {
             let label = self.menu_config.label(command);
             tracing::warn!(?command, %error, "system menu command failed");
             self.show_notice(&format!("{label} FAILED: {error}"));
+        }
+    }
+
+    fn save_screenshot(&mut self, window: bool) {
+        let saved = if window {
+            crate::screenshot::save_window(self)
+        } else {
+            crate::screenshot::save(self)
+        };
+        match saved {
+            Ok(path) => self.show_notice(&format!("SCREENSHOT SAVED: {}", path.display())),
+            Err(error) => self.show_notice(&format!("SCREENSHOT FAILED: {error}")),
         }
     }
 
