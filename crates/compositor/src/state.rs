@@ -788,7 +788,7 @@ impl Compositor {
     /// The invoke words plugins currently supply to the core, for tests.
     #[must_use]
     pub fn plugin_invoke_words(&mut self) -> Vec<String> {
-        self.dispatch.core_mut().plugin_invoke_words().to_vec()
+        self.dispatch.core_mut().plugin_invoke_words()
     }
 
     pub(crate) fn refresh_speech_vocabulary(&mut self) {

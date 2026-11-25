@@ -100,7 +100,7 @@ mod invoke_verb {
     #[test]
     fn plugin_words_snap_like_context_words_and_replace_on_each_set() {
         let mut state = focused("app_id = 'editor'\n[buttons]\n");
-        state.set_plugin_invoke_words(vec!["changelog".into()]);
+        state.set_plugin_invoke_words(vec![(0, vec!["changelog".into()])]);
         let (mut state, first) = step(state, &speech("Invoke change log."));
         assert_eq!(first, typed("/changelog "), "a plugin word snaps");
         state.set_plugin_invoke_words(Vec::new());
