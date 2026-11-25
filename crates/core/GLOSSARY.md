@@ -38,6 +38,7 @@
 | Capture session | A core-owned speech start paired with exactly one stop, independently of sidecar I/O. |
 | Secret destination | One focused surface during one focus generation; returning to the same surface creates a different destination. |
 | Secret confirmation | A one-use controller approval bound to a named reference and secret destination, with a short expiry. |
+| Quick info | An on-screen notice for time, date or battery. Voice jumps to a unit by its displayed name (`what time is it`, `date`, `battery`); the `info = "cycle"` pad action steps through them, and Back dismisses the notice. |
 
 The system menu opens after holding Guide for half a second. A shorter tap
 keeps switching the focus level. The menu consumes controller input before the

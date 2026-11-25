@@ -152,6 +152,10 @@ pub enum Effect {
     },
     SetVolume(u8),
     PasswordSpeechIgnored,
+    /// Show the requested quick info notice (time, date or battery).
+    ShowInfo(crate::quick_info::InfoItem),
+    /// Dismiss an active quick info notice.
+    DismissInfo,
     RunMenuCommand(crate::menu::Command),
     SettingsMode(usize),
     PersistMode(usize),
@@ -337,6 +341,7 @@ pub struct State {
     adjuster_buttons: Vec<ButtonName>,
     /// The left stick's last vertical sample, so a gauge opens already moving.
     adjuster_stick: i16,
+    quick_info: crate::quick_info::QuickInfo,
 }
 
 impl State {
@@ -369,7 +374,14 @@ impl State {
             adjusters: Vec::new(),
             adjuster_buttons: Vec::new(),
             adjuster_stick: 0,
+            quick_info: crate::quick_info::QuickInfo::default(),
         }
+    }
+
+    /// The quick info item currently displayed, if any.
+    #[must_use]
+    pub const fn quick_info(&self) -> Option<crate::quick_info::InfoItem> {
+        self.quick_info.shown()
     }
 
     #[must_use]
@@ -990,6 +1002,7 @@ fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
     release_pad(state, Handoff::Disconnect, effects);
     state.opening_button = None;
     state.choice_buttons.clear();
+    state.quick_info.clear_buttons();
     state.core.controller_disconnected();
 }
 
@@ -1343,7 +1356,22 @@ fn finish_route(
             fuzzy,
         });
     }
-    effects.extend(actions.into_iter().map(Effect::Apply));
+    emit_actions(&mut state.quick_info, actions, effects);
+}
+
+fn emit_actions(
+    quick_info: &mut crate::quick_info::QuickInfo,
+    actions: Vec<Action>,
+    effects: &mut Vec<Effect>,
+) {
+    for action in actions {
+        if action == Action::CycleInfo {
+            let item = quick_info.cycle();
+            effects.push(Effect::ShowInfo(item));
+        } else {
+            effects.push(Effect::Apply(action));
+        }
+    }
 }
 
 /// Runs the top frame until it emits effects, waits for a reply or empties.
@@ -1510,6 +1538,11 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if matches!(event, Event::Focus { .. }) {
         state.tool_pad = ToolPad::Idle;
     }
+    if let Event::Tick { elapsed } = &event
+        && state.quick_info.tick(*elapsed)
+    {
+        effects.push(Effect::DismissInfo);
+    }
     if launcher_event(state, &event, effects) {
         return;
     }
@@ -1556,6 +1589,7 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
         if stick_tick(
             &mut state.core,
             &mut state.mouse,
+            &mut state.quick_info,
             state.keyboard.is_open(),
             elapsed,
             effects,
@@ -1577,16 +1611,14 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
 fn stick_tick(
     core: &mut crate::State,
     mouse: &mut mouse::State,
+    quick_info: &mut crate::quick_info::QuickInfo,
     keyboard_open: bool,
     elapsed: Duration,
     effects: &mut Vec<Effect>,
 ) -> bool {
     if !keyboard_open {
-        effects.extend(
-            core.stick_actions(elapsed, mouse.sticks.left, mouse.sticks.right)
-                .into_iter()
-                .map(Effect::Apply),
-        );
+        let actions = core.stick_actions(elapsed, mouse.sticks.left, mouse.sticks.right);
+        emit_actions(quick_info, actions, effects);
     }
     let mapped = [
         core.maps_stick(tehuti_protocol::Stick::Left),
@@ -1671,15 +1703,18 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
         name,
         state: ButtonState::Released,
     } = event
-        && (state.choice_buttons.contains(name) || state.adjuster_buttons.contains(name))
     {
-        state.adjuster_buttons.retain(|held| held != name);
-        state.choice_buttons.retain(|held| held != name);
-        return true;
+        let quick_info = state.quick_info.release_button(*name);
+        if state.choice_buttons.contains(name) || state.adjuster_buttons.contains(name) || quick_info {
+            state.adjuster_buttons.retain(|held| held != name);
+            state.choice_buttons.retain(|held| held != name);
+            return true;
+        }
     }
     sync_keyboard_config(state);
     let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
     if adjuster_phrase(state, event, dictation, effects)
+        || quick_info_phrase(state, event, dictation, effects)
         || settings_phrase(state, event, dictation, effects)
         || crate::menu_button_release(&mut state.core, event)
         || reserved_safety(state, event, dictation, effects)
@@ -1689,6 +1724,53 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
     STACK
         .into_iter()
         .any(|layer| overlay_input(state, layer, event, dictation, effects))
+}
+
+fn quick_info_phrase(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
+    let blocking_list = state.choice_list_open()
+        && !state
+            .launcher
+            .as_ref()
+            .is_some_and(crate::launcher::Launcher::is_invitation);
+    if dictation
+        || state.keyboard.password_field_active()
+        || state.settings.open
+        || blocking_list
+        || state.core.menu().is_some()
+    {
+        return false;
+    }
+    let Event::Speech { text } = event else {
+        return false;
+    };
+    let Some(item) = crate::quick_info::from_phrase(text.as_str()) else {
+        return false;
+    };
+    let shown = state.quick_info.show(item);
+    state.core.keyboard_feedback(shown.voice_name());
+    effects.push(Effect::ShowInfo(shown));
+    true
+}
+
+fn quick_info_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if !state.quick_info.is_open() {
+        return false;
+    }
+    let Event::Button {
+        name,
+        state: ButtonState::Pressed,
+    } = event
+    else {
+        return false;
+    };
+    if *name != state.core.pad_family().button(crate::pad::Role::Back) {
+        return false;
+    }
+    state.quick_info.claim_button(*name);
+    if state.quick_info.dismiss() {
+        effects.push(Effect::DismissInfo);
+    }
+    true
 }
 
 fn settings_phrase(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
@@ -1750,12 +1832,12 @@ fn overlay_input(
         Overlay::Settings => settings_input_layer(state, event, dictation, effects),
         Overlay::SystemMenu => !dictation && system_menu(state, event, effects),
         Overlay::Secret => secret_input(state, event),
+        Overlay::Notice => quick_info_input(state, event, effects),
         Overlay::Keyboard => keyboard(state, event, effects),
         Overlay::Mouse => mouse_event(state, event, effects),
         Overlay::Application
         | Overlay::Cursor
         | Overlay::SecretUnavailable
-        | Overlay::Notice
         | Overlay::MouseNotice
         | Overlay::Bar => false,
     }
@@ -2046,7 +2128,9 @@ fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>)
         effects.push(Effect::Apply(release));
     }
     if state.core.passthrough() {
-        if adjuster_phrase(state, &event, false, effects) {
+        if adjuster_phrase(state, &event, false, effects)
+            || quick_info_phrase(state, &event, false, effects)
+        {
             return;
         }
         if !state.overlay_owns_pad() {

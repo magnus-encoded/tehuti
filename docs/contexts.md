@@ -137,6 +137,7 @@ fields are rejected.
 | `{ notify = "Ready" }` | Shows a notice. |
 | `{ layout = "focus-column-left" }` | Runs a tiling action, written in kebab case: `focus-column-left`, `focus-column-right`, `focus-window-up`, `focus-window-down`, `move-column-left`, `move-column-right`, `switch-preset-column-width`, `switch-preset-column-width-back`, `focus-workspace-down`, `focus-workspace-up`, `move-column-to-workspace-down`, `move-column-to-workspace-up`, `toggle-fullscreen`, `maximize-column`. |
 | `{ ticker = "toggle" }` | Shows or hides the mapping ticker. |
+| `{ info = "cycle" }` | Cycles the quick info notice through time, date and battery (buttons and sticks only). |
 | `{ undo_dictation = true }` | Deletes the last dictated phrase. `false` is rejected. |
 | `{ secret = { entry = "mail" } }` | Asks for confirmation, then delivers the named secret entry. |
 

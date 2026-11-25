@@ -116,6 +116,8 @@ impl World {
                     | Effect::ListRemoteHosts
                     | Effect::ConnectRemoteMicrophone { .. }
                     | Effect::RunMenuCommand(_)
+                    | Effect::ShowInfo(_)
+                    | Effect::DismissInfo
                     | Effect::PasswordSpeechIgnored
                     | Effect::FocusGapExpired
                     | Effect::MovePointer { .. }

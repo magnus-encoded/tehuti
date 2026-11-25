@@ -166,6 +166,7 @@ pub fn validate_actions(actions: Vec<Action>, permissions: &[Permission]) -> Res
             Action::Layout { .. } => ("layout", None),
             Action::ToggleTicker => ("toggle_ticker", None),
             Action::UndoDictation => ("undo_dictation", None),
+            Action::CycleInfo => ("cycle_info", None),
         };
         match permission {
             Some(permission) if permissions.contains(&permission) => {}
