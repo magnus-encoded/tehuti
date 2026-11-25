@@ -208,7 +208,7 @@ impl OwnershipView {
 
     fn sound_chord(&self, button: ButtonName) -> bool {
         crate::sound::SoundStep::from_chord_button(button).is_some()
-            && ((self.guide_held && self.guide_mode != GuideMode::App)
+            && ((!self.menu_open && self.guide_held && self.guide_mode != GuideMode::App)
                 || self.chord_buttons.contains(&button))
     }
 

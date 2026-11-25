@@ -222,6 +222,27 @@ mod tests {
     }
 
     #[test]
+    fn east_closes_an_open_system_menu_instead_of_cycling_outputs() {
+        let (state, _) = button(State::default(), ButtonName::Guide, ButtonState::Pressed);
+        let (state, _) = run(
+            state,
+            Input::Event {
+                event: Event::Tick {
+                    elapsed: Duration::from_millis(500),
+                },
+                elapsed: Duration::ZERO,
+            },
+        );
+        assert!(state.core().menu().is_some(), "holding Guide opens system menu");
+        let (state, effects) = button(state, ButtonName::East, ButtonState::Pressed);
+        assert!(state.core().menu().is_none(), "East closes the open system menu");
+        assert!(
+            !effects.contains(&Effect::NextAudioOutput),
+            "East must not cycle outputs while the system menu is open"
+        );
+    }
+
+    #[test]
     fn sound_words_and_chords_work_in_passthrough_and_over_invitation() {
         let context = parse_context(
             "app_id = 'org.example.Game'\nbuttons = {}\n[pad]\npassthrough = true\n[speech]\n'mute' = { key = 'm' }",
