@@ -115,13 +115,12 @@ mod invoke_verb {
         state.set_plugin_invoke_words(1, vec!["code-review".into()]);
         state.set_plugin_invoke_words(0, vec!["usage-report".into()]);
         assert_eq!(state.plugin_invoke_words(), ["usage-report", "code-review"]);
-        let (mut state, refreshed) = step(state, &speech("invoke usage raport"));
+        let (state, refreshed) = step(state, &speech("invoke usage raport"));
         assert_eq!(refreshed, typed("/usage-report "));
         let (state, removed) = step(state, &speech("invoke change log"));
         assert_eq!(removed, typed("/change-log "));
-        let (next, other) = step(state, &speech("invoke code review"));
+        let (mut state, other) = step(state, &speech("invoke code review"));
         assert_eq!(other, typed("/code-review "));
-        state = next;
         state.set_plugin_invoke_words(0, Vec::new());
         assert_eq!(state.plugin_invoke_words(), ["code-review"]);
         let (state, cleared) = step(state, &speech("invoke usage raport"));
