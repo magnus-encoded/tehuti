@@ -4,7 +4,7 @@
 mod launch {
     use core::time::Duration;
     use proptest::prelude::*;
-    use std::os::unix::fs::PermissionsExt as _;
+    use std::os::unix::{fs::PermissionsExt as _, process::ExitStatusExt as _};
     use std::time::Instant;
     use tehuti::launch::{Exit, Failure, FakeSpawner, Launch, Launches};
 
@@ -139,7 +139,14 @@ mod launch {
             run_restore_helper(std::path::Path::new(&pid_file));
             return;
         }
-        for mode in ["service", "missing", "failed"] {
+        for (mode, crash) in [
+            ("service", false),
+            ("missing", false),
+            ("failed", false),
+            ("service", true),
+            ("missing", true),
+            ("failed", true),
+        ] {
             let root = tempfile::tempdir().unwrap();
             let scope = root.path().join("systemd-run");
             if mode != "missing" {
@@ -158,6 +165,7 @@ mod launch {
                     "launch::applications_outlive_the_restore_helper_process",
                 ])
                 .env(PROBE, &pid_file)
+                .env("TEHUTI_RESTORE_HELPER_CRASH", if crash { "1" } else { "0" })
                 .env("PATH", root.path())
                 .status()
                 .unwrap();
@@ -170,7 +178,11 @@ mod launch {
                 .args(["-TERM", &pid])
                 .status()
                 .unwrap();
-            assert!(helper.success());
+            if crash {
+                assert_eq!(helper.signal(), Some(9), "{mode}: helper was killed");
+            } else {
+                assert!(helper.success(), "{mode}: helper exited cleanly");
+            }
             assert!(
                 alive.success(),
                 "application must outlive its restore helper process"
@@ -194,6 +206,13 @@ mod launch {
         while !std::fs::read_to_string(format!("/proc/{pid}/comm")).is_ok_and(|name| name.trim() == "sleep") {
             assert!(Instant::now() < deadline, "stub application did not start");
             std::thread::sleep(Duration::from_millis(10));
+        }
+        if std::env::var("TEHUTI_RESTORE_HELPER_CRASH").as_deref() == Ok("1") {
+            let status = std::process::Command::new("/bin/kill")
+                .args(["-KILL", &std::process::id().to_string()])
+                .status()
+                .unwrap();
+            panic!("helper survived SIGKILL: {status}");
         }
     }
 

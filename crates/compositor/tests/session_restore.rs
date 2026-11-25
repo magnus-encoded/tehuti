@@ -2,6 +2,7 @@
 #[cfg(test)]
 mod tests {
     use core::time::Duration;
+    use proptest::prelude::*;
     use std::time::Instant;
 
     use tehuti::session_restore::{
@@ -558,6 +559,73 @@ mod tests {
             assert!(Saved::parse(&text).is_err(), "{target:?}");
         }
     }
+    fn terminal_session_file(count: usize, identity: &str) -> Saved {
+        let windows: Vec<_> = (0..count)
+            .map(|column| {
+                serde_json::json!({
+                    "app_id": "org.example.Terminal.desktop",
+                    "workspace": 0,
+                    "column": column,
+                    "terminal": {
+                        "emulator": "foot",
+                        "target": "work",
+                        "socket": "restore-tests",
+                        "app_id": identity
+                    }
+                })
+            })
+            .collect();
+        Saved::parse(&serde_json::json!({"version": 1, "windows": windows}).to_string())
+            .expect("valid terminal identities")
+    }
+
+    fn check_terminal_save(count: usize, identity: &str) {
+        let root = tempfile::tempdir().unwrap();
+        let path = root.path().join("session.json");
+        let store = Store::new(path.clone());
+        let prior = terminal_session_file(1, "org.example.Terminal");
+        store.save(&prior).unwrap();
+        let prior_bytes = std::fs::read(&path).unwrap();
+        let next = terminal_session_file(count, identity);
+        let result = store.save(&next);
+        if u64::try_from(next.to_text().len()).unwrap() > MAX_FILE_BYTES {
+            assert!(result.is_err(), "oversized save must report failure");
+            assert_eq!(std::fs::read(&path).unwrap(), prior_bytes);
+            assert_eq!(store.take().unwrap(), Some(prior));
+        } else {
+            result.unwrap();
+            assert_eq!(store.take().unwrap(), Some(next));
+        }
+        assert!(store.take().unwrap().is_none(), "restore is consumed once");
+        assert!(!path.with_extension("tmp").exists());
+    }
+
+    #[test]
+    fn oversized_terminal_identities_preserve_the_last_restorable_session() {
+        check_terminal_save(MAX_WINDOWS, &"a".repeat(1024));
+    }
+
+    #[test]
+    fn terminal_saves_accept_the_size_cap_and_reject_one_byte_more() {
+        let cap = usize::try_from(MAX_FILE_BYTES).unwrap();
+        let overhead = terminal_session_file(1, "a").to_text().len() - 1;
+        let identity = "a".repeat(cap - overhead);
+        assert_eq!(terminal_session_file(1, &identity).to_text().len(), cap);
+        check_terminal_save(1, &identity);
+        check_terminal_save(1, &(identity + "a"));
+    }
+
+    proptest! {
+        #![proptest_config(ProptestConfig::with_cases(64))]
+        #[test]
+        fn terminal_saves_round_trip_or_preserve_the_previous_session(
+            count in 1..=MAX_WINDOWS,
+            identity in "[a-zA-Z0-9_.]{1,2048}",
+        ) {
+            check_terminal_save(count, &identity);
+        }
+    }
+
     #[test]
     fn terminal_restore_only_attaches_and_receives_no_input() {
         const PROBE: &str = "TEHUTI_TERMINAL_RESTORE_PROBE";

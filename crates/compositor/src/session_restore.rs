@@ -325,10 +325,18 @@ impl Store {
     /// An empty session is not written, so it never replaces an earlier good one.
     ///
     /// # Errors
-    /// Directory creation, write or atomic replacement failed.
+    /// The serialized session exceeds the size cap, or directory creation, write or
+    /// atomic replacement failed.
     pub fn save(&self, saved: &Saved) -> io::Result<()> {
         if saved.windows.is_empty() {
             return Ok(());
+        }
+        let text = saved.to_text();
+        if !u64::try_from(text.len()).is_ok_and(|length| length <= MAX_FILE_BYTES) {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidInput,
+                "session exceeds the size cap",
+            ));
         }
         let parent = self
             .path
@@ -342,7 +350,7 @@ impl Store {
             .create_new(true)
             .mode(0o600)
             .open(&temporary)?;
-        file.write_all(saved.to_text().as_bytes())?;
+        file.write_all(text.as_bytes())?;
         file.sync_all()?;
         std::fs::rename(&temporary, &self.path)
     }
