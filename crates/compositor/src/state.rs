@@ -1438,7 +1438,7 @@ impl Compositor {
                 self.note_press(Modality::Pointer);
             }
             self.recording_modality(Modality::Pointer, |compositor| {
-                compositor.pointer_click(button, pressed)
+                compositor.pointer_click(button, pressed);
             });
         }
     }

@@ -176,7 +176,7 @@ proptest! {
             if keyboard {
                 let expected = unmatched_at
                     .take()
-                    .map(|at| now.saturating_sub(at))
+                    .map(|when| now.saturating_sub(when))
                     .filter(|after| *after <= 10_000);
                 prop_assert_eq!(fallbacks.first().copied(), expected, "{:?}", notices);
             }

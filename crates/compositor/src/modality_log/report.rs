@@ -79,8 +79,8 @@ pub fn build(lines: &[Line], skipped: u64) -> Report {
                 bump(report.inputs.entry(*modality).or_default());
                 if let (Modality::Keyboard, Some(class)) = (modality, key_class) {
                     let key = (app_id.clone(), *class);
-                    let continues = last_press.as_ref().is_some_and(|(last, at)| {
-                        *last == key && line.time_unix_ms.saturating_sub(*at) <= BURST_GAP_MS
+                    let continues = last_press.as_ref().is_some_and(|(last, when)| {
+                        *last == key && line.time_unix_ms.saturating_sub(*when) <= BURST_GAP_MS
                     });
                     let tally = tallies.entry(key.clone()).or_default();
                     bump(&mut tally.presses);

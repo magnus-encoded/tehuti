@@ -213,13 +213,13 @@ impl FallbackWatch {
     pub const WINDOW: Duration = Duration::from_secs(10);
 
     /// A new transcript replaces any earlier one: only an unmatched one is watched.
-    pub fn speech(&mut self, outcome: SpeechOutcome, at: Duration) {
-        self.unmatched_at = matches!(outcome, SpeechOutcome::Unmatched).then_some(at);
+    pub fn speech(&mut self, outcome: SpeechOutcome, when: Duration) {
+        self.unmatched_at = matches!(outcome, SpeechOutcome::Unmatched).then_some(when);
     }
 
     /// The time since the watched transcript when this keyboard action is its fallback; each transcript has at most one.
-    pub fn keyboard(&mut self, at: Duration) -> Option<Duration> {
-        let since = at.checked_sub(self.unmatched_at.take()?)?;
+    pub fn keyboard(&mut self, when: Duration) -> Option<Duration> {
+        let since = when.checked_sub(self.unmatched_at.take()?)?;
         (since <= Self::WINDOW).then_some(since)
     }
 }
@@ -252,26 +252,26 @@ pub struct Recorder<S: Sink> {
 impl<S: Sink> Recorder<S> {
     /// Opens a session span.
     #[must_use]
-    pub fn start(sink: S, at: Stamp) -> Self {
+    pub fn start(sink: S, when: Stamp) -> Self {
         let mut recorder = Self {
             sink,
             held_command_modifiers: Vec::new(),
             fallback: FallbackWatch::default(),
             failing: false,
         };
-        recorder.write(at, Record::SessionStart);
+        recorder.write(when, Record::SessionStart);
         recorder
     }
 
     /// Closes the session span and hands back the sink.
     #[must_use]
-    pub fn end(mut self, at: Stamp) -> S {
-        self.write(at, Record::SessionEnd);
+    pub fn end(mut self, when: Stamp) -> S {
+        self.write(when, Record::SessionEnd);
         self.sink
     }
 
     /// One hardware key change, by evdev code.
-    pub fn key(&mut self, code: u32, pressed: bool, app_id: Option<&str>, at: Stamp) {
+    pub fn key(&mut self, code: u32, pressed: bool, app_id: Option<&str>, when: Stamp) {
         if is_command_modifier(code) {
             self.held_command_modifiers.retain(|held| *held != code);
             if pressed {
@@ -286,16 +286,16 @@ impl<S: Sink> Recorder<S> {
             return;
         };
         self.write(
-            at,
+            when,
             Record::Input {
                 modality: Modality::Keyboard,
                 app_id: app_id.map(str::to_owned),
                 key_class: Some(key_class),
             },
         );
-        if let Some(after) = self.fallback.keyboard(at.elapsed) {
+        if let Some(after) = self.fallback.keyboard(when.elapsed) {
             self.write(
-                at,
+                when,
                 Record::Fallback {
                     app_id: app_id.map(str::to_owned),
                     key_class,
@@ -311,9 +311,9 @@ impl<S: Sink> Recorder<S> {
     }
 
     /// A pad, pointer or on-screen keyboard press.
-    pub fn press(&mut self, modality: Modality, app_id: Option<&str>, at: Stamp) {
+    pub fn press(&mut self, modality: Modality, app_id: Option<&str>, when: Stamp) {
         self.write(
-            at,
+            when,
             Record::Input {
                 modality,
                 app_id: app_id.map(str::to_owned),
@@ -323,10 +323,10 @@ impl<S: Sink> Recorder<S> {
     }
 
     /// One transcript arrived; its text is not kept.
-    pub fn speech(&mut self, outcome: SpeechOutcome, app_id: Option<&str>, at: Stamp) {
-        self.fallback.speech(outcome, at.elapsed);
+    pub fn speech(&mut self, outcome: SpeechOutcome, app_id: Option<&str>, when: Stamp) {
+        self.fallback.speech(outcome, when.elapsed);
         self.write(
-            at,
+            when,
             Record::Speech {
                 outcome,
                 app_id: app_id.map(str::to_owned),
@@ -334,9 +334,15 @@ impl<S: Sink> Recorder<S> {
         );
     }
 
-    pub fn surface_opened(&mut self, surface: Surface, modality: Modality, app_id: Option<&str>, at: Stamp) {
+    pub fn surface_opened(
+        &mut self,
+        surface: Surface,
+        modality: Modality,
+        app_id: Option<&str>,
+        when: Stamp,
+    ) {
         self.write(
-            at,
+            when,
             Record::SurfaceOpened {
                 surface,
                 modality,
@@ -345,25 +351,27 @@ impl<S: Sink> Recorder<S> {
         );
     }
 
-    fn write(&mut self, at: Stamp, record: Record) {
+    fn write(&mut self, when: Stamp, record: Record) {
         let line = Line {
-            time_unix_ms: at.unix_ms,
+            time_unix_ms: when.unix_ms,
             record,
         };
         let result = serde_json::to_string(&line)
             .map_err(io::Error::other)
             .and_then(|text| self.sink.append(&text));
         match result {
-            Ok(()) if self.failing => {
-                self.failing = false;
-                tracing::info!("modality log writes again");
+            Ok(()) => {
+                if self.failing {
+                    self.failing = false;
+                    tracing::info!("modality log writes again");
+                }
             }
-            Ok(()) => {}
-            Err(error) if !self.failing => {
-                self.failing = true;
-                tracing::warn!(%error, "modality log not written");
+            Err(error) => {
+                if !self.failing {
+                    self.failing = true;
+                    tracing::warn!(%error, "modality log not written");
+                }
             }
-            Err(_) => {}
         }
     }
 }
