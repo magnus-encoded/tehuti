@@ -127,12 +127,21 @@ mod tests {
         )
     }
 
-    fn output(id: u32, name: &str, default: bool) -> AudioOutput {
+    fn output(node_id: u32, name: &str, default: bool) -> AudioOutput {
         AudioOutput {
-            id,
+            node_id,
             name: name.into(),
             default,
         }
+    }
+
+    fn has_chip(state: &State, text: &str, tone: Tone) -> bool {
+        state
+            .core()
+            .bar()
+            .segments()
+            .iter()
+            .any(|segment| segment.text == text && segment.tone == tone)
     }
 
     #[test]
@@ -262,66 +271,28 @@ mod tests {
     fn bar_shows_mute_microphone_mute_and_output_signposts() {
         let (state, _) = run(State::default(), Input::AudioMuted(Some(true)));
         assert!(state.core().bar().muted(), "muted state tracked on bar");
-        assert!(
-            state
-                .core()
-                .bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "Mute" && segment.tone == Tone::Error),
-            "Mute chip must appear on the bar"
-        );
+        assert!(has_chip(&state, "Mute", Tone::Error), "Mute chip on bar");
+
         let (state, _) = run(state, Input::AudioMuted(Some(false)));
         assert!(!state.core().bar().muted(), "unmuted state clears bar flag");
-        assert!(
-            !state
-                .core()
-                .bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "Mute"),
-            "Mute chip must disappear after unmute"
-        );
-        assert!(
-            state
-                .core()
-                .bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "Unmute" && segment.tone == Tone::Result),
-            "Unmute feedback must teach the voice word"
-        );
+        assert!(!has_chip(&state, "Mute", Tone::Error), "Mute chip clears");
+        assert!(has_chip(&state, "Unmute", Tone::Result), "Unmute signpost");
 
         let (state, _) = run(state, Input::MicrophoneMuted(Some(true)));
         assert!(
-            state
-                .core()
-                .bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "Microphone mute" && segment.tone == Tone::Error),
-            "Microphone mute chip must appear on the bar"
+            has_chip(&state, "Microphone mute", Tone::Error),
+            "Microphone mute chip on bar"
         );
         let (state, _) = run(state, Input::MicrophoneMuted(Some(false)));
         assert!(
-            state
-                .core()
-                .bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "Microphone on" && segment.tone == Tone::Result),
-            "Microphone on feedback must teach the voice word"
+            has_chip(&state, "Microphone on", Tone::Result),
+            "Microphone on signpost"
         );
 
         let headphones = output(47, "Headphones", true);
         let (state, _) = run(state, Input::AudioOutputSelected(Ok(headphones)));
         assert!(
-            state
-                .core()
-                .bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "Speaker headphones" && segment.tone == Tone::Result),
+            has_chip(&state, "Speaker headphones", Tone::Result),
             "output switch must show the exact voice phrase"
         );
     }
@@ -334,15 +305,15 @@ mod tests {
             output(52, "HDMI Monitor", false),
         ];
         assert_eq!(
-            match_output(&outputs, "usb headphones").map(|chosen| chosen.id),
+            match_output(&outputs, "usb headphones").map(|chosen| chosen.node_id),
             Some(47)
         );
         assert_eq!(
-            match_output(&outputs, "headphones").map(|chosen| chosen.id),
+            match_output(&outputs, "headphones").map(|chosen| chosen.node_id),
             Some(47)
         );
         assert_eq!(
-            match_output(&outputs, "hedphones").map(|chosen| chosen.id),
+            match_output(&outputs, "hedphones").map(|chosen| chosen.node_id),
             Some(47)
         );
         assert_eq!(match_output(&outputs, "toaster"), None);
@@ -363,7 +334,7 @@ mod tests {
         #[test]
         fn every_sound_signpost_matches_what_voice_parses(
             name in "[A-Za-z][A-Za-z0-9 ]{2,24}",
-            id in 1_u32..1000,
+            node_id in 1_u32..1000,
         ) {
             for muted in [true, false] {
                 prop_assert_eq!(
@@ -376,7 +347,7 @@ mod tests {
                 );
             }
             let sink = AudioOutput {
-                id,
+                node_id,
                 name,
                 default: true,
             };
@@ -396,22 +367,22 @@ mod tests {
             let start = start.checked_rem(count).unwrap_or(0);
             let mut outputs: Vec<AudioOutput> = (0..count)
                 .map(|index| AudioOutput {
-                    id: u32::try_from(index.saturating_add(10)).unwrap_or(10),
+                    node_id: u32::try_from(index.saturating_add(10)).unwrap_or(10),
                     name: format!("Output {index}"),
                     default: index == start,
                 })
                 .collect();
             let mut visited = Vec::with_capacity(count);
             for _ in 0..count {
-                let chosen = next_output(&outputs).unwrap().id;
+                let chosen = next_output(&outputs).unwrap().node_id;
                 visited.push(chosen);
                 for sink in &mut outputs {
-                    sink.default = sink.id == chosen;
+                    sink.default = sink.node_id == chosen;
                 }
             }
             let unique: std::collections::HashSet<u32> = visited.iter().copied().collect();
             prop_assert_eq!(unique.len(), count);
-            prop_assert_eq!(visited.last().copied(), outputs.get(start).map(|sink| sink.id));
+            prop_assert_eq!(visited.last().copied(), outputs.get(start).map(|sink| sink.node_id));
         }
     }
 }

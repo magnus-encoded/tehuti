@@ -943,6 +943,10 @@ fn run_tasks(mut state: State, tasks: Vec<Task>, effects: Vec<Effect>) -> (State
 }
 
 /// Inputs that only update the settings view.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive match over every input, updating settings only"
+)]
 fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {

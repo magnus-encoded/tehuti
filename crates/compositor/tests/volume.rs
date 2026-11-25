@@ -133,26 +133,24 @@ Video
     fn parse_sinks_reads_only_audio_sinks_and_their_default_marker() {
         let sinks = tehuti::volume::parse_sinks(SAMPLE_STATUS);
         assert_eq!(sinks.len(), 2);
-        assert_eq!(sinks[0].id, 47);
+        assert_eq!(sinks[0].node_id, 47);
         assert_eq!(sinks[0].name, "Built-in Speakers");
         assert!(sinks[0].default, "starred sink must be marked default");
-        assert_eq!(sinks[1].id, 51);
+        assert_eq!(sinks[1].node_id, 51);
         assert_eq!(sinks[1].name, "Headphones");
         assert!(!sinks[1].default, "unstarred sink must not be default");
     }
 
     struct FakeAudio {
-        sink_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        mic_muted: std::sync::Arc<std::sync::atomic::AtomicBool>,
-        default_sink: std::sync::Arc<std::sync::atomic::AtomicU32>,
+        sink_muted: std::sync::Arc<core::sync::atomic::AtomicBool>,
+        mic_muted: std::sync::Arc<core::sync::atomic::AtomicBool>,
+        default_sink: std::sync::Arc<core::sync::atomic::AtomicU32>,
         received: mpsc::Receiver<Vec<String>>,
     }
 
     fn fake_audio_backend() -> (Backend, FakeAudio) {
-        use std::sync::{
-            Arc,
-            atomic::{AtomicBool, AtomicU32},
-        };
+        use core::sync::atomic::{AtomicBool, AtomicU32};
+        use std::sync::Arc;
         let sink_muted = Arc::new(AtomicBool::new(false));
         let mic_muted = Arc::new(AtomicBool::new(false));
         let default_sink = Arc::new(AtomicU32::new(47));
@@ -178,11 +176,11 @@ Video
 
     fn fake_wpctl(
         args: &[String],
-        sink_flag: &std::sync::atomic::AtomicBool,
-        mic_flag: &std::sync::atomic::AtomicBool,
-        sink_id: &std::sync::atomic::AtomicU32,
+        sink_flag: &core::sync::atomic::AtomicBool,
+        mic_flag: &core::sync::atomic::AtomicBool,
+        sink_id: &core::sync::atomic::AtomicU32,
     ) -> Result<String, String> {
-        use std::sync::atomic::Ordering;
+        use core::sync::atomic::Ordering;
         let is_source = args.get(1).map(String::as_str) == Some("@DEFAULT_AUDIO_SOURCE@");
         let flag = if is_source { mic_flag } else { sink_flag };
         match args.first().map(String::as_str) {
@@ -262,9 +260,9 @@ Video
     }
 
     #[test]
-    fn mute_and_microphone_mute_work_by_voice_and_pad_toggle_on_the_bar() {
+    fn mute_and_unmute_work_by_voice_and_pad_toggle_on_the_bar() {
+        use core::sync::atomic::Ordering;
         use smithay::reexports::wayland_server::Display;
-        use std::sync::atomic::Ordering;
         use tehuti::state::Compositor;
         use tehuti_protocol::{ButtonName, Event, Text};
 
@@ -298,6 +296,31 @@ Video
             "pad chord toggles sink mute"
         );
 
+        let commands: Vec<_> = audio.received.try_iter().collect();
+        for expected in [
+            ["set-mute", "@DEFAULT_AUDIO_SINK@", "1"],
+            ["set-mute", "@DEFAULT_AUDIO_SINK@", "0"],
+            ["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
+        ] {
+            assert!(
+                commands.iter().any(|command| command == &expected),
+                "missing wpctl call {expected:?}: {commands:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn microphone_mute_works_by_voice_and_pad_toggle_on_the_bar() {
+        use core::sync::atomic::Ordering;
+        use smithay::reexports::wayland_server::Display;
+        use tehuti::state::Compositor;
+        use tehuti_protocol::{ButtonName, Event, Text};
+
+        let (backend, audio) = fake_audio_backend();
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_volume_backend(backend);
+
         compositor.handle(&Event::Speech {
             text: Text::new("microphone mute".into()).unwrap(),
         });
@@ -325,9 +348,6 @@ Video
 
         let commands: Vec<_> = audio.received.try_iter().collect();
         for expected in [
-            ["set-mute", "@DEFAULT_AUDIO_SINK@", "1"],
-            ["set-mute", "@DEFAULT_AUDIO_SINK@", "0"],
-            ["set-mute", "@DEFAULT_AUDIO_SINK@", "toggle"],
             ["set-mute", "@DEFAULT_AUDIO_SOURCE@", "1"],
             ["set-mute", "@DEFAULT_AUDIO_SOURCE@", "0"],
             ["set-mute", "@DEFAULT_AUDIO_SOURCE@", "toggle"],
@@ -341,8 +361,8 @@ Video
 
     #[test]
     fn output_cycle_on_pad_and_named_output_by_voice_show_voice_names() {
+        use core::sync::atomic::Ordering;
         use smithay::reexports::wayland_server::Display;
-        use std::sync::atomic::Ordering;
         use tehuti::state::Compositor;
         use tehuti_protocol::{ButtonName, Event, Text};
 

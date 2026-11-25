@@ -13,7 +13,7 @@ const OUTPUT_MATCH_SCORE: u16 = 800;
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct AudioOutput {
     /// Backend node identifier passed to `wpctl set-default`.
-    pub id: u32,
+    pub node_id: u32,
     /// Human-readable description shown by the audio server.
     pub name: String,
     /// Whether this output is currently the default sink.
@@ -208,7 +208,7 @@ fn match_by_sound<'outputs>(
             (score >= OUTPUT_MATCH_SCORE).then_some((score, output))
         })
         .collect();
-    scored.sort_by(|left, right| right.0.cmp(&left.0));
+    scored.sort_by_key(|entry| core::cmp::Reverse(entry.0));
     let (best_score, best_output) = scored.first().copied()?;
     let clear_winner = scored
         .get(1)

@@ -120,7 +120,7 @@ fn switch_output(
         Some(name) => match_output(&sinks, name).ok_or_else(|| "No matching speaker".to_owned())?,
         None => next_output(&sinks).ok_or_else(|| "No audio output".to_owned())?,
     };
-    let _applied = run(&["set-default".into(), chosen.id.to_string()])?;
+    let _applied = run(&["set-default".into(), chosen.node_id.to_string()])?;
     Ok(AudioOutput {
         default: true,
         ..chosen.clone()
@@ -224,10 +224,10 @@ fn parse_sink_line(content: &str) -> Option<AudioOutput> {
         .strip_prefix('*')
         .map_or((false, content), |after| (true, after.trim_start()));
     let (id_text, after_dot) = rest.split_once('.')?;
-    let id = id_text.trim().parse::<u32>().ok()?;
+    let node_id = id_text.trim().parse::<u32>().ok()?;
     let name = strip_volume_suffix(after_dot).trim();
     (!name.is_empty()).then(|| AudioOutput {
-        id,
+        node_id,
         name: name.into(),
         default,
     })
