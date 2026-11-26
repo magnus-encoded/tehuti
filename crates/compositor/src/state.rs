@@ -159,6 +159,7 @@ pub struct Compositor {
     confirmation: crate::secret_confirmation::SecretConfirmation<WlSurface>,
     notice_until: Option<Instant>,
     taps: tehuti_core::tap_hold::TapHold<Keycode>,
+    pending_sequence: std::collections::VecDeque<(u32, tehuti_protocol::SequenceStep)>,
     notice_text: Option<String>,
     recording_failure: Option<String>,
     workspace_feedback: crate::workspace_feedback::Feedback,
@@ -332,6 +333,7 @@ impl Compositor {
             unfocused_window: None,
             notice_until: None,
             taps: tehuti_core::tap_hold::TapHold::default(),
+            pending_sequence: std::collections::VecDeque::new(),
             notice_text: None,
             recording_failure: None,
             workspace_feedback: crate::workspace_feedback::Feedback::default(),
@@ -2872,28 +2874,14 @@ impl Compositor {
     fn apply(&mut self, action: &Action) {
         match action {
             Action::Key { key, mods } => {
-                self.tap_with_modifiers(*key, mods);
+                let _sent: bool = self.tap_with_modifiers(*key, mods);
                 let (app_id, title) = self.focused_window_label();
                 tracing::info!(?key, ?app_id, ?title, "key delivered to focused window");
             }
             Action::KeyDown { key } => self.press_held_key(*key),
             Action::KeyUp { key } => self.release_held_key(*key),
-            Action::Text { text } => {
-                let method = if self.text_input.send(text.as_str()) {
-                    "text-input"
-                } else {
-                    self.type_text(text.as_str());
-                    "keys"
-                };
-                let (app_id, title) = self.focused_window_label();
-                tracing::info!(
-                    characters = text.as_str().chars().count(),
-                    method,
-                    ?app_id,
-                    ?title,
-                    "text delivered to focused window"
-                );
-            }
+            Action::Text { text } => self.deliver_text(text),
+            Action::Sequence { steps } => self.queue_sequence(steps),
             Action::SecretRequest { reference } => {
                 if !self.request_secret_delivery(reference.clone()) {
                     self.confirmation.delivery_unavailable(self.clock_elapsed());
@@ -2917,6 +2905,64 @@ impl Compositor {
             Action::ToggleTicker => self.dispatch.core_mut().toggle_ticker(),
             // The core expands it into backspaces before any action reaches here.
             Action::UndoDictation => {}
+        }
+    }
+
+    fn deliver_text(&mut self, text: &tehuti_protocol::Text) {
+        let method = if self.text_input.send(text.as_str()) {
+            "text-input"
+        } else {
+            self.type_text(text.as_str());
+            "keys"
+        };
+        let (app_id, title) = self.focused_window_label();
+        tracing::info!(
+            characters = text.as_str().chars().count(),
+            method,
+            ?app_id,
+            ?title,
+            "text delivered to focused window"
+        );
+    }
+
+    fn queue_sequence(&mut self, steps: &[tehuti_protocol::SequenceStep]) {
+        const MAX_PENDING_SEQUENCE: usize = 64;
+        if steps.is_empty() {
+            return;
+        }
+        if self.pending_sequence.len().saturating_add(steps.len()) > MAX_PENDING_SEQUENCE {
+            tracing::warn!(
+                queued = self.pending_sequence.len(),
+                incoming = steps.len(),
+                "key sequence queue full; dropping sequence"
+            );
+            return;
+        }
+        let epoch = self.taps.focus_epoch();
+        self.pending_sequence
+            .extend(steps.iter().cloned().map(|step| (epoch, step)));
+        self.drain_pending_sequence();
+    }
+
+    fn drain_pending_sequence(&mut self) {
+        let epoch = self.taps.focus_epoch();
+        self.pending_sequence
+            .retain(|(step_epoch, _)| epoch.wrapping_sub(*step_epoch).cast_signed() <= 0);
+        while !self.taps.has_held() {
+            let Some((_, step)) = self.pending_sequence.pop_front() else {
+                break;
+            };
+            match step {
+                tehuti_protocol::SequenceStep::Key { key, mods } => {
+                    if !self.tap_with_modifiers(key, &mods) {
+                        self.pending_sequence.clear();
+                        break;
+                    }
+                }
+                tehuti_protocol::SequenceStep::Text { text } => {
+                    self.deliver_text(&text);
+                }
+            }
         }
     }
 
@@ -2999,7 +3045,7 @@ impl Compositor {
                 keycode
             }
         };
-        self.tap_keycode_with_modifiers(keycode, &mods);
+        let _sent: bool = self.tap_keycode_with_modifiers(keycode, &mods);
         tracing::info!(?chord, "chord delivered to focused window");
     }
 
@@ -3022,16 +3068,16 @@ impl Compositor {
         })
     }
 
-    fn tap_with_modifiers(&mut self, key: KeyName, mods: &[tehuti_protocol::Modifier]) {
+    fn tap_with_modifiers(&mut self, key: KeyName, mods: &[tehuti_protocol::Modifier]) -> bool {
         let Some(keycode) = self.resolve_keysym(key.keysym_name()) else {
             tracing::warn!(?key, "shortcut unavailable in active keymap");
-            return;
+            return false;
         };
-        self.tap_keycode_with_modifiers(keycode, mods);
+        self.tap_keycode_with_modifiers(keycode, mods)
     }
 
     /// The one way to send a modifier: press the real modifier keys so xkb serializes the mask.
-    fn tap_keycode_with_modifiers(&mut self, keycode: Keycode, mods: &[tehuti_protocol::Modifier]) {
+    fn tap_keycode_with_modifiers(&mut self, keycode: Keycode, mods: &[tehuti_protocol::Modifier]) -> bool {
         use tehuti_protocol::Modifier;
         let names: Vec<&str> = [
             (Modifier::Ctrl, "Control_L"),
@@ -3044,9 +3090,10 @@ impl Compositor {
         .map(|(_, name)| name)
         .collect();
         let Some(held) = self.resolve_modifiers(&names) else {
-            return;
+            return false;
         };
         self.tap_held(keycode, &held);
+        true
     }
 
     fn resolve_modifiers(&mut self, names: &[&str]) -> Option<Vec<Keycode>> {
@@ -3106,14 +3153,17 @@ impl Compositor {
     pub fn release_due_keys(&mut self) {
         let events = self.taps.tick(self.clock_elapsed());
         self.apply_tap_events(events);
+        self.drain_pending_sequence();
     }
 
     pub fn release_all_held(&mut self) {
+        self.pending_sequence.clear();
         let events = self.taps.release_all();
         self.apply_tap_events(events);
     }
 
     pub fn release_timer_failed(&mut self) {
+        self.pending_sequence.clear();
         let events = self.taps.timer_failed();
         self.apply_tap_events(events);
     }
@@ -3125,7 +3175,12 @@ impl Compositor {
     pub fn release_timer_fired(&mut self) -> Option<core::time::Duration> {
         let (events, delay) = self.taps.timer_fired(self.clock_elapsed());
         self.apply_tap_events(events);
-        delay
+        self.drain_pending_sequence();
+        delay.or_else(|| {
+            self.taps
+                .take_release_request(self.clock_elapsed())
+                .map(|wait| wait.max(core::time::Duration::from_millis(1)))
+        })
     }
 
     /// Presses the named modifier keys around one key tap.
@@ -3406,6 +3461,9 @@ impl Compositor {
     /// Runs the dispatch a keyboard focus change deferred, now that smithay's keyboard lock is free.
     fn flush_focus_change(&mut self) {
         if let Some(input) = self.focus_change_dispatch.take() {
+            let epoch = self.taps.focus_epoch();
+            self.pending_sequence
+                .retain(|(step_epoch, _)| epoch.wrapping_sub(*step_epoch).cast_signed() <= 0);
             let events = self.taps.flush_focus();
             self.apply_tap_events(events);
             let _rejection = self.dispatch(input);
@@ -4727,6 +4785,7 @@ impl SeatHandler for Compositor {
         );
         self.text_input.focus(focused);
         self.taps.focus_changed();
+        self.pending_sequence.clear();
         // smithay holds the keyboard lock here; a dispatch can relayout and call
         // `set_focus` again, which deadlocks. Defer it until the lock is released.
         self.focus_change_dispatch = Some(DispatchInput::TextField {
@@ -4772,6 +4831,7 @@ fn redacted_action(action: &Action) -> String {
     match action {
         Action::Text { text } => format!("Text({} bytes)", text.as_str().len()),
         Action::Notice { text } => format!("Notice({} bytes)", text.as_str().len()),
+        Action::Sequence { steps } => format!("Sequence({} steps)", steps.len()),
         other => format!("{other:?}"),
     }
 }
@@ -5125,5 +5185,83 @@ mod tests {
         assert!(!is_down(&compositor, 9));
         compositor.tap_held(smithay::input::keyboard::Keycode::new(9), &[]);
         assert!(compositor.take_release_request().is_some());
+    }
+
+    #[test]
+    fn sequence_releases_prefix_modifiers_before_pressing_the_follow_up_key() {
+        use tehuti_protocol::{Action, KeyName, Modifier, SequenceStep};
+        let (_display, mut compositor) = compositor();
+        let ctrl = compositor.resolve_keysym("Control_L").unwrap().raw();
+        let prefix = compositor.resolve_keysym("b").unwrap().raw();
+        let follow = compositor.resolve_keysym("n").unwrap().raw();
+        compositor.apply(&Action::Sequence {
+            steps: vec![
+                SequenceStep::Key {
+                    key: KeyName::B,
+                    mods: vec![Modifier::Ctrl],
+                },
+                SequenceStep::Key {
+                    key: KeyName::N,
+                    mods: vec![],
+                },
+            ],
+        });
+        assert!(is_down(&compositor, ctrl));
+        assert!(is_down(&compositor, prefix));
+        assert!(!is_down(&compositor, follow));
+        assert!(compositor.take_release_request().is_some());
+
+        compositor.advance_clocks(Duration::from_millis(40));
+        assert!(compositor.release_timer_fired().is_some());
+        assert!(
+            !is_down(&compositor, ctrl),
+            "prefix modifier releases before follow-up"
+        );
+        assert!(!is_down(&compositor, prefix));
+        assert!(is_down(&compositor, follow));
+
+        compositor.advance_clocks(Duration::from_millis(40));
+        assert_eq!(compositor.release_timer_fired(), None);
+        assert!(!is_down(&compositor, follow));
+    }
+
+    #[test]
+    fn focus_change_cancels_remaining_steps_of_an_in_flight_sequence() {
+        use tehuti_protocol::{Action, KeyName, Modifier, SequenceStep};
+        let (_display, mut compositor) = compositor();
+        let ctrl = compositor.resolve_keysym("Control_L").unwrap().raw();
+        let prefix = compositor.resolve_keysym("b").unwrap().raw();
+        let detach = compositor.resolve_keysym("d").unwrap().raw();
+        compositor.apply(&Action::Sequence {
+            steps: vec![
+                SequenceStep::Key {
+                    key: KeyName::B,
+                    mods: vec![Modifier::Ctrl],
+                },
+                SequenceStep::Key {
+                    key: KeyName::D,
+                    mods: vec![],
+                },
+            ],
+        });
+        assert!(is_down(&compositor, ctrl));
+        assert!(is_down(&compositor, prefix));
+
+        compositor.taps.focus_changed();
+        compositor.focus_change_dispatch = Some(super::DispatchInput::TextField {
+            active: false,
+            changed: false,
+            kind: tehuti_core::keyboard::FieldKind::Normal,
+        });
+        compositor.flush_focus_change();
+        compositor.advance_clocks(Duration::from_millis(40));
+        compositor.release_due_keys();
+
+        assert!(!is_down(&compositor, ctrl));
+        assert!(!is_down(&compositor, prefix));
+        assert!(
+            !is_down(&compositor, detach),
+            "cancelled step must not leak to new focus"
+        );
     }
 }

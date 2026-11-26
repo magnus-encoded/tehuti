@@ -67,6 +67,7 @@ mod docs {
             ("foot", include_str!("../../../examples/foot/context.toml")),
             ("global", include_str!("../../../examples/global/context.toml")),
             ("mpv", include_str!("../../../examples/mpv/context.toml")),
+            ("tmux", include_str!("../../../examples/tmux/context.toml")),
         ] {
             let _context = parse_context(source).unwrap_or_else(|error| panic!("{name}: {error}"));
         }

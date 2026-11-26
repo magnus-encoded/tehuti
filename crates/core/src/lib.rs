@@ -102,7 +102,10 @@ impl State {
                         matches!(event, Event::Speech { .. }).then(|| text.as_str().chars().count());
                     tracked.push(action);
                 }
-                Action::Key { .. } | Action::KeyDown { .. } | Action::SecretRequest { .. } => {
+                Action::Key { .. }
+                | Action::KeyDown { .. }
+                | Action::Sequence { .. }
+                | Action::SecretRequest { .. } => {
                     self.dictated = None;
                     tracked.push(action);
                 }

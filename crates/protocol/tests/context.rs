@@ -1060,4 +1060,156 @@ text = "a\u0000b"
         assert!(parse_context("app_id = 'mgba-qt'\nlabel = \"a\\u0000b\"\nbuttons = {}").is_err());
         assert!(parse_context("app_id = 'mgba-qt'\nlabel = 3\nbuttons = {}").is_err());
     }
+
+    #[test]
+    fn sequence_mappings_validate_bounds_and_unknown_fields() {
+        use tehuti_protocol::{Action, ButtonName, MAX_SEQUENCE_STEPS, Modifier, SequenceStep, Text};
+        let context = parse_context(
+            "app_id = 'test'\n\
+             [buttons]\n\
+             right_bumper = { sequence = [{ key = 'b', mods = ['ctrl'] }, { key = 'n' }] }\n\
+             [speech]\n\
+             'Split right' = { sequence = [{ key = 'b', mods = ['ctrl'] }, { text = '%' }] }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            context.action_for(ButtonName::RightBumper),
+            Some(Action::Sequence {
+                steps: vec![
+                    SequenceStep::Key {
+                        key: KeyName::B,
+                        mods: vec![Modifier::Ctrl],
+                    },
+                    SequenceStep::Key {
+                        key: KeyName::N,
+                        mods: vec![],
+                    },
+                ],
+            })
+        );
+        assert_eq!(
+            context.speech_action("split right"),
+            Some(Action::Sequence {
+                steps: vec![
+                    SequenceStep::Key {
+                        key: KeyName::B,
+                        mods: vec![Modifier::Ctrl],
+                    },
+                    SequenceStep::Text {
+                        text: Text::new("%".into()).unwrap(),
+                    },
+                ],
+            })
+        );
+        assert_eq!(context.key_for(ButtonName::RightBumper), None);
+        assert_eq!(context.held_key_for(ButtonName::RightBumper), None);
+
+        let empty = parse_context("app_id = 'test'\n[buttons]\neast = { sequence = [] }");
+        assert!(empty.is_err(), "empty sequence must fail");
+
+        let too_many = vec!["{ key = 'a' }"; MAX_SEQUENCE_STEPS.saturating_add(1)].join(", ");
+        let over_limit = parse_context(&format!(
+            "app_id = 'test'\n[buttons]\neast = {{ sequence = [{too_many}] }}"
+        ));
+        assert!(over_limit.is_err(), "over-long sequence must fail");
+
+        let bad_key = parse_context("app_id = 'test'\n[buttons]\neast = { sequence = [{ key = 'florp' }] }")
+            .unwrap_err();
+        assert!(bad_key.contains("florp"), "{bad_key}");
+
+        let bad_hold =
+            parse_context("app_id = 'test'\n[buttons]\neast = { sequence = [{ key = 'b', hold = true }] }");
+        assert!(bad_hold.is_err(), "hold is not valid inside a sequence step");
+    }
+
+    fn tmux_key_chord(key: KeyName) -> tehuti_protocol::Action {
+        use tehuti_protocol::{Action, Modifier, SequenceStep};
+        Action::Sequence {
+            steps: vec![
+                SequenceStep::Key {
+                    key: KeyName::B,
+                    mods: vec![Modifier::Ctrl],
+                },
+                SequenceStep::Key { key, mods: vec![] },
+            ],
+        }
+    }
+
+    fn tmux_text_chord(text: &str) -> tehuti_protocol::Action {
+        use tehuti_protocol::{Action, Modifier, SequenceStep, Text};
+        Action::Sequence {
+            steps: vec![
+                SequenceStep::Key {
+                    key: KeyName::B,
+                    mods: vec![Modifier::Ctrl],
+                },
+                SequenceStep::Text {
+                    text: Text::new(text.into()).unwrap(),
+                },
+            ],
+        }
+    }
+
+    #[test]
+    fn tmux_context_maps_pad_steps() {
+        use tehuti_protocol::ButtonName;
+        let context = parse_context(include_str!("../../../examples/tmux/context.toml")).unwrap();
+        assert_eq!(context.app_id(), "tmux");
+        assert_eq!(context.keyboard().terminal, Some(true));
+        assert!(context.warnings().is_empty(), "{:?}", context.warnings());
+        assert!(
+            context.skipped_phrases().is_empty(),
+            "{:?}",
+            context.skipped_phrases()
+        );
+        assert_eq!(
+            context.action_for(ButtonName::North),
+            None,
+            "North stays free for the terminal on-screen keyboard"
+        );
+        for (button, expected) in [
+            (ButtonName::LeftBumper, tmux_key_chord(KeyName::P)),
+            (ButtonName::RightBumper, tmux_key_chord(KeyName::N)),
+            (ButtonName::DpadUp, tmux_key_chord(KeyName::Up)),
+            (ButtonName::DpadDown, tmux_key_chord(KeyName::Down)),
+            (ButtonName::DpadLeft, tmux_key_chord(KeyName::Left)),
+            (ButtonName::DpadRight, tmux_key_chord(KeyName::Right)),
+            (ButtonName::West, tmux_key_chord(KeyName::Space)),
+        ] {
+            assert_eq!(context.action_for(button), Some(expected), "{button:?}");
+        }
+    }
+
+    #[test]
+    fn tmux_context_maps_voice_destinations_and_terminal_clipboard() {
+        use tehuti_protocol::{Action, Modifier};
+        let context = parse_context(include_str!("../../../examples/tmux/context.toml")).unwrap();
+        for (phrase, expected) in [
+            ("Split right", tmux_text_chord("%")),
+            ("Split below", tmux_text_chord("\"")),
+            ("Window three", tmux_key_chord(KeyName::Digit3)),
+            ("window 3", tmux_key_chord(KeyName::Digit3)),
+            ("Zoom pane", tmux_key_chord(KeyName::Z)),
+            ("Detach", tmux_key_chord(KeyName::D)),
+            ("New window", tmux_key_chord(KeyName::C)),
+            ("Copy mode", tmux_text_chord("[")),
+            ("Paste buffer", tmux_text_chord("]")),
+            (
+                "Copy",
+                Action::Key {
+                    key: KeyName::C,
+                    mods: vec![Modifier::Ctrl, Modifier::Shift],
+                },
+            ),
+            (
+                "Paste",
+                Action::Key {
+                    key: KeyName::V,
+                    mods: vec![Modifier::Ctrl, Modifier::Shift],
+                },
+            ),
+        ] {
+            assert_eq!(context.speech_action(phrase), Some(expected), "{phrase}");
+        }
+    }
 }

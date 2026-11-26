@@ -2,8 +2,8 @@
 
 use core::time::Duration;
 use tehuti_protocol::{
-    Action, ButtonName, Context, KeyName, LayoutAction, Modifier, Stick, StickDirection, TickerSpeech,
-    normalize_phrase,
+    Action, ButtonName, Context, KeyName, LayoutAction, Modifier, SequenceStep, Stick, StickDirection,
+    TickerSpeech, normalize_phrase,
 };
 
 /// How long the ticker holds one scroll position. A few steps a second keep redraws rare.
@@ -211,19 +211,7 @@ pub fn icon_label(icon: &str) -> Option<&'static str> {
 #[must_use]
 pub fn action_text(action: &Action) -> String {
     match action {
-        Action::Key { key, mods } => {
-            let mut text = String::new();
-            for modifier in mods {
-                text.push_str(match modifier {
-                    Modifier::Ctrl => "Ctrl+",
-                    Modifier::Alt => "Alt+",
-                    Modifier::Shift => "Shift+",
-                    Modifier::Super => "Super+",
-                });
-            }
-            text.push_str(&key_text(*key));
-            text
-        }
+        Action::Key { key, mods } => key_chord_text(*key, mods),
         Action::KeyDown { key } | Action::KeyUp { key } => key_text(*key),
         Action::Text { text } => format!("\"{}\"", text.as_str().trim()),
         Action::Launch { desktop_entry } => {
@@ -239,6 +227,35 @@ pub fn action_text(action: &Action) -> String {
         Action::Layout { action } => layout_text(*action).into(),
         Action::ToggleTicker => "Ticker".into(),
         Action::UndoDictation => "Undo".into(),
+        Action::Sequence { steps } => steps.iter().map(sequence_step_text).collect::<Vec<_>>().join(" "),
+    }
+}
+
+fn key_chord_text(key: KeyName, mods: &[Modifier]) -> String {
+    let mut text = String::new();
+    for modifier in mods {
+        text.push_str(match modifier {
+            Modifier::Ctrl => "Ctrl+",
+            Modifier::Alt => "Alt+",
+            Modifier::Shift => "Shift+",
+            Modifier::Super => "Super+",
+        });
+    }
+    text.push_str(&key_text(key));
+    text
+}
+
+fn sequence_step_text(step: &SequenceStep) -> String {
+    match step {
+        SequenceStep::Key { key, mods } => key_chord_text(*key, mods),
+        SequenceStep::Text { text } => {
+            let trimmed = text.as_str().trim();
+            if trimmed.chars().count() == 1 {
+                trimmed.into()
+            } else {
+                format!("\"{trimmed}\"")
+            }
+        }
     }
 }
 
@@ -290,16 +307,9 @@ const fn modifier_cap(modifier: Modifier) -> &'static str {
 #[must_use]
 pub fn action_pieces(action: &Action) -> Vec<Piece> {
     match action {
-        Action::Key { key, mods } => {
-            let mut pieces = Vec::new();
-            for modifier in mods {
-                pieces.push(Piece::Key(modifier_cap(*modifier).into()));
-                pieces.push(Piece::Text("+".into()));
-            }
-            pieces.push(Piece::Key(key_cap(*key)));
-            pieces
-        }
+        Action::Key { key, mods } => key_chord_pieces(*key, mods),
         Action::KeyDown { key } | Action::KeyUp { key } => vec![Piece::Key(key_cap(*key))],
+        Action::Sequence { steps } => steps.iter().flat_map(sequence_step_pieces).collect(),
         Action::Launch { .. }
         | Action::Close
         | Action::Text { .. }
@@ -310,6 +320,30 @@ pub fn action_pieces(action: &Action) -> Vec<Piece> {
         | Action::Layout { .. }
         | Action::ToggleTicker
         | Action::UndoDictation => vec![Piece::Text(action_text(action))],
+    }
+}
+
+fn key_chord_pieces(key: KeyName, mods: &[Modifier]) -> Vec<Piece> {
+    let mut pieces = Vec::new();
+    for modifier in mods {
+        pieces.push(Piece::Key(modifier_cap(*modifier).into()));
+        pieces.push(Piece::Text("+".into()));
+    }
+    pieces.push(Piece::Key(key_cap(key)));
+    pieces
+}
+
+fn sequence_step_pieces(step: &SequenceStep) -> Vec<Piece> {
+    match step {
+        SequenceStep::Key { key, mods } => key_chord_pieces(*key, mods),
+        SequenceStep::Text { text } => {
+            let trimmed = text.as_str().trim();
+            if trimmed.chars().count() == 1 {
+                vec![Piece::Key(trimmed.into())]
+            } else {
+                vec![Piece::Text(format!("\"{trimmed}\""))]
+            }
+        }
     }
 }
 
@@ -597,7 +631,8 @@ fn key_name<'context>(context: &'context Context, action: &Action) -> Option<&'c
         | Action::Restart
         | Action::Layout { .. }
         | Action::ToggleTicker
-        | Action::UndoDictation => None,
+        | Action::UndoDictation
+        | Action::Sequence { .. } => None,
     }
 }
 
