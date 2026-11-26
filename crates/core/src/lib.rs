@@ -1128,7 +1128,7 @@ fn global_context(state: &State) -> Option<&Context> {
 }
 
 /// The built-in tiling action for a button at the columns level, if any.
-pub(crate) const fn columns_level_action(button: ButtonName) -> Option<LayoutAction> {
+const fn columns_level_action(button: ButtonName) -> Option<LayoutAction> {
     match button {
         ButtonName::LeftBumper => Some(LayoutAction::FocusColumnLeft),
         ButtonName::RightBumper => Some(LayoutAction::FocusColumnRight),
@@ -1234,7 +1234,7 @@ fn guide_button(state: &mut State, button_state: ButtonState) {
 
 /// Guide with the d-pad: at the app level it focuses the neighbouring column or workspace, at the columns level it moves
 /// the focused column.
-pub(crate) const fn guide_dpad_action(level: Level, name: ButtonName) -> Option<LayoutAction> {
+const fn guide_dpad_action(level: Level, name: ButtonName) -> Option<LayoutAction> {
     match (level, name) {
         (Level::App, ButtonName::DpadUp) => Some(LayoutAction::FocusWorkspaceUp),
         (Level::App, ButtonName::DpadDown) => Some(LayoutAction::FocusWorkspaceDown),

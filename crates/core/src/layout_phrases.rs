@@ -36,7 +36,7 @@ fn workspace_number(word: &str) -> Option<NonZeroU8> {
             .ok()
             .and_then(NonZeroU8::new);
     }
-    if !word.is_empty() && !word.starts_with('0') && word.bytes().all(|byte| byte.is_ascii_digit()) {
+    if !word.is_empty() && !word.starts_with('0') && word.as_bytes().iter().all(u8::is_ascii_digit) {
         return word.parse::<u8>().ok().and_then(NonZeroU8::new);
     }
     None

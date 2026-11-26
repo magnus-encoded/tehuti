@@ -8,7 +8,7 @@ mod layout_phrases {
     use tehuti_core::{State, layout, layout_phrases, step, ticker};
     use tehuti_protocol::{Action, Event, KeyName, LayoutAction, Text, parse_context};
 
-    fn nz(value: u8) -> NonZeroU8 {
+    fn non_zero(value: u8) -> NonZeroU8 {
         NonZeroU8::new(value).unwrap()
     }
 
@@ -24,29 +24,32 @@ mod layout_phrases {
     #[test]
     fn default_phrases_trigger_their_layout_actions_without_any_context() {
         let cases = [
-            ("Workspace two.", LayoutAction::FocusWorkspace(nz(2))),
-            ("workspace 2", LayoutAction::FocusWorkspace(nz(2))),
-            ("WORKSPACE ONE!", LayoutAction::FocusWorkspace(nz(1))),
+            ("Workspace two.", LayoutAction::FocusWorkspace(non_zero(2))),
+            ("workspace 2", LayoutAction::FocusWorkspace(non_zero(2))),
+            ("WORKSPACE ONE!", LayoutAction::FocusWorkspace(non_zero(1))),
             (
                 "Send to workspace two.",
-                LayoutAction::MoveColumnToWorkspace(nz(2)),
+                LayoutAction::MoveColumnToWorkspace(non_zero(2)),
             ),
-            ("send to workspace 3", LayoutAction::MoveColumnToWorkspace(nz(3))),
+            (
+                "send to workspace 3",
+                LayoutAction::MoveColumnToWorkspace(non_zero(3)),
+            ),
             (
                 "Send to workspace two and stay.",
-                LayoutAction::MoveColumnToWorkspaceStay(nz(2)),
+                LayoutAction::MoveColumnToWorkspaceStay(non_zero(2)),
             ),
             (
                 "Send and stay workspace two.",
-                LayoutAction::MoveColumnToWorkspaceStay(nz(2)),
+                LayoutAction::MoveColumnToWorkspaceStay(non_zero(2)),
             ),
             (
                 "Send and stay to workspace 4.",
-                LayoutAction::MoveColumnToWorkspaceStay(nz(4)),
+                LayoutAction::MoveColumnToWorkspaceStay(non_zero(4)),
             ),
             (
                 "Send and stay two.",
-                LayoutAction::MoveColumnToWorkspaceStay(nz(2)),
+                LayoutAction::MoveColumnToWorkspaceStay(non_zero(2)),
             ),
             ("Full screen.", LayoutAction::ToggleFullscreen),
             ("fullscreen", LayoutAction::ToggleFullscreen),
@@ -137,23 +140,23 @@ mod layout_phrases {
     #[test]
     fn send_follows_and_send_and_stay_does_not() {
         assert!(
-            layout::follows_moved_window(LayoutAction::MoveColumnToWorkspace(nz(2))),
+            layout::follows_moved_window(LayoutAction::MoveColumnToWorkspace(non_zero(2))),
             "send to workspace follows the window"
         );
         assert!(
-            !layout::follows_moved_window(LayoutAction::MoveColumnToWorkspaceStay(nz(2))),
+            !layout::follows_moved_window(LayoutAction::MoveColumnToWorkspaceStay(non_zero(2))),
             "send and stay keeps focus on the current workspace"
         );
         assert_eq!(
-            layout::command_for(LayoutAction::FocusWorkspace(nz(2))),
+            layout::command_for(LayoutAction::FocusWorkspace(non_zero(2))),
             layout::Command::FocusWorkspaceAt(1)
         );
         assert_eq!(
-            layout::command_for(LayoutAction::MoveColumnToWorkspace(nz(3))),
+            layout::command_for(LayoutAction::MoveColumnToWorkspace(non_zero(3))),
             layout::Command::MoveColumnToWorkspaceAt(2)
         );
         assert_eq!(
-            layout::command_for(LayoutAction::MoveColumnToWorkspaceStay(nz(3))),
+            layout::command_for(LayoutAction::MoveColumnToWorkspaceStay(non_zero(3))),
             layout::Command::MoveColumnToWorkspaceAt(2)
         );
     }
@@ -184,7 +187,7 @@ mod layout_phrases {
     proptest! {
         #[test]
         fn every_unit_label_parses_back_to_the_same_action(workspace in 1_u8..=20) {
-            let number = nz(workspace);
+            let number = non_zero(workspace);
             let units = [
                 LayoutAction::FocusWorkspace(number),
                 LayoutAction::MoveColumnToWorkspace(number),
