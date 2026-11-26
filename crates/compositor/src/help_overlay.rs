@@ -366,37 +366,37 @@ fn paint_trigger_piece(
             Some(cursor.saturating_add(34))
         }
         Piece::Chip(text) => Some(paint_badge(canvas, cursor, row_top, remaining, text, false)),
-        Piece::Key(text) => {
-            let text = key_display(text);
-            Some(paint_badge(canvas, cursor, row_top, remaining, &text, true))
-        }
-        Piece::Text(text) => {
-            label(
-                canvas,
-                cursor,
-                row_top.saturating_add(16),
-                remaining,
-                text,
-                18,
-                WHITE,
-            );
-            Some(cursor.saturating_add(text.chars().count().saturating_mul(10).saturating_add(8)))
-        }
-        Piece::Dim(text) => {
-            label(
-                canvas,
-                cursor,
-                row_top.saturating_add(18),
-                remaining,
-                text,
-                15,
-                DIM,
-            );
-            Some(cursor.saturating_add(text.chars().count().saturating_mul(9).saturating_add(8)))
-        }
+        Piece::Key(text) => Some(paint_badge(
+            canvas,
+            cursor,
+            row_top,
+            remaining,
+            &key_display(text),
+            true,
+        )),
+        Piece::Text(text) => Some(paint_trigger_text(
+            canvas,
+            cursor,
+            row_top.saturating_add(16),
+            remaining,
+            text,
+            18,
+            WHITE,
+            10,
+        )),
+        Piece::Dim(text) => Some(paint_trigger_text(
+            canvas,
+            cursor,
+            row_top.saturating_add(18),
+            remaining,
+            text,
+            15,
+            DIM,
+            9,
+        )),
         Piece::Icon { fallback, .. } => {
             let text = pieces_summary(fallback);
-            label(
+            Some(paint_trigger_text(
                 canvas,
                 cursor,
                 row_top.saturating_add(16),
@@ -404,10 +404,28 @@ fn paint_trigger_piece(
                 &text,
                 17,
                 WHITE,
-            );
-            Some(cursor.saturating_add(text.chars().count().saturating_mul(10).saturating_add(8)))
+                10,
+            ))
         }
     }
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "compact text-run helper keeping trigger piece rendering concise"
+)]
+fn paint_trigger_text(
+    canvas: &mut Canvas,
+    cursor: usize,
+    top: usize,
+    remaining: usize,
+    text: &str,
+    size: usize,
+    colour: [u8; 4],
+    char_width: usize,
+) -> usize {
+    label(canvas, cursor, top, remaining, text, size, colour);
+    cursor.saturating_add(text.chars().count().saturating_mul(char_width).saturating_add(8))
 }
 
 fn paint_badge(
@@ -646,26 +664,7 @@ fn paint_button_symbol(canvas: &mut Canvas, left: usize, top: usize, shape: Shap
             canvas.rectangle(left.saturating_add(7), top.saturating_add(7), 2, 14, bgra);
             canvas.rectangle(left.saturating_add(19), top.saturating_add(7), 2, 14, bgra);
         }
-        Shape::Triangle => {
-            canvas.rectangle(left.saturating_add(7), top.saturating_add(19), 14, 2, bgra);
-            for step in 0usize..12 {
-                let half = step.checked_div(2).unwrap_or_default();
-                canvas.rectangle(
-                    left.saturating_add(13).saturating_sub(half),
-                    top.saturating_add(7).saturating_add(step),
-                    2,
-                    2,
-                    bgra,
-                );
-                canvas.rectangle(
-                    left.saturating_add(13).saturating_add(half),
-                    top.saturating_add(7).saturating_add(step),
-                    2,
-                    2,
-                    bgra,
-                );
-            }
-        }
+        Shape::Triangle => paint_triangle(canvas, left, top, bgra),
         Shape::View => {
             canvas.rectangle(left.saturating_add(6), top.saturating_add(7), 10, 8, bgra);
             canvas.rectangle(left.saturating_add(12), top.saturating_add(13), 10, 8, bgra);
@@ -676,6 +675,27 @@ fn paint_button_symbol(canvas: &mut Canvas, left: usize, top: usize, shape: Shap
             }
         }
         Shape::Disc(_) | Shape::Dpad(_) => {}
+    }
+}
+
+fn paint_triangle(canvas: &mut Canvas, left: usize, top: usize, bgra: [u8; 4]) {
+    canvas.rectangle(left.saturating_add(7), top.saturating_add(19), 14, 2, bgra);
+    for step in 0usize..12 {
+        let half = step.checked_div(2).unwrap_or_default();
+        canvas.rectangle(
+            left.saturating_add(13).saturating_sub(half),
+            top.saturating_add(7).saturating_add(step),
+            2,
+            2,
+            bgra,
+        );
+        canvas.rectangle(
+            left.saturating_add(13).saturating_add(half),
+            top.saturating_add(7).saturating_add(step),
+            2,
+            2,
+            bgra,
+        );
     }
 }
 

@@ -378,10 +378,11 @@ impl State {
 
     #[must_use]
     pub fn overlay_owns_pad(&self) -> bool {
+        let tool_open = self.keyboard.is_open() || self.mouse.active();
         self.help_overlay.is_some()
             || self.adjuster.is_some()
             || self.volume_pending == crate::adjuster::VolumeRead::Pending
-            || (self.tool_pad == ToolPad::Held && (self.keyboard.is_open() || self.mouse.active()))
+            || (self.tool_pad == ToolPad::Held && tool_open)
     }
 
     #[must_use]
@@ -1580,7 +1581,7 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if let Event::Tick { elapsed } = event
         && state.core.menu().is_none()
         && !state.settings.open
-        && !state.help_overlay_open()
+        && state.help_overlay.is_none()
         && state.choice_list.as_ref().is_none_or(|list| !list.is_open())
     {
         if state.keyboard.tick(elapsed) {

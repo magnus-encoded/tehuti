@@ -245,16 +245,7 @@ fn assemble_groups(
     level: crate::Level,
     extra_adjusters: &[String],
 ) -> Vec<Group> {
-    let (mut focused_voice_m, mut focused_pad_m) = (Vec::new(), Vec::new());
-    let (mut global_voice_m, mut global_pad_m) = (Vec::new(), Vec::new());
-    for entry in mapped {
-        match (entry.origin, entry.kind) {
-            (Origin::Focused, TriggerKind::Voice) => focused_voice_m.push(entry),
-            (Origin::Focused, TriggerKind::Pad) => focused_pad_m.push(entry),
-            (Origin::Global, TriggerKind::Voice) => global_voice_m.push(entry),
-            (Origin::Global, TriggerKind::Pad) => global_pad_m.push(entry),
-        }
-    }
+    let (focused_voice_m, focused_pad_m, global_voice_m, global_pad_m) = partition_mapped(mapped);
     let mapped_phrases = collect_normalized_phrases(&focused_voice_m, &global_voice_m);
     let action_voices = build_action_voice_map(&focused_voice_m, &global_voice_m, level);
     let focused_voice: Vec<Item> = focused_voice_m.into_iter().map(voice_item).collect();
@@ -298,6 +289,27 @@ fn assemble_groups(
         global_pad,
     );
     groups
+}
+
+fn partition_mapped(
+    mapped: Vec<MappedEntry>,
+) -> (
+    Vec<MappedEntry>,
+    Vec<MappedEntry>,
+    Vec<MappedEntry>,
+    Vec<MappedEntry>,
+) {
+    let (mut focused_voice, mut focused_pad) = (Vec::new(), Vec::new());
+    let (mut global_voice, mut global_pad) = (Vec::new(), Vec::new());
+    for entry in mapped {
+        match (entry.origin, entry.kind) {
+            (Origin::Focused, TriggerKind::Voice) => focused_voice.push(entry),
+            (Origin::Focused, TriggerKind::Pad) => focused_pad.push(entry),
+            (Origin::Global, TriggerKind::Voice) => global_voice.push(entry),
+            (Origin::Global, TriggerKind::Pad) => global_pad.push(entry),
+        }
+    }
+    (focused_voice, focused_pad, global_voice, global_pad)
 }
 
 fn push_group(groups: &mut Vec<Group>, kind: GroupKind, title: String, items: Vec<Item>) {

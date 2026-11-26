@@ -427,7 +427,7 @@ pub enum TriggerKind {
 }
 
 /// A ticker entry paired with its origin, trigger kind, runnable action and spoken phrases.
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct MappedEntry {
     pub origin: Origin,
     pub kind: TriggerKind,
@@ -585,33 +585,19 @@ fn normal_button_entry(
 ) -> Option<MappedEntry> {
     let trigger = vec![pad.piece(button)];
     if talk.contains(&button) {
-        return Some(MappedEntry {
-            origin: talk_origin,
-            kind: TriggerKind::Pad,
-            entry: talk_entry(trigger),
-            action: None,
-            phrases: Vec::new(),
-        });
+        return Some(pad_mapped(talk_origin, talk_entry(trigger), None));
     }
     if level == crate::Level::Columns
         && let Some(action) = column_action(button)
     {
-        return Some(MappedEntry {
-            origin: Origin::Global,
-            kind: TriggerKind::Pad,
-            entry: Entry::new(trigger, &action, None),
-            action: Some(action),
-            phrases: Vec::new(),
-        });
+        return Some(pad_mapped(
+            Origin::Global,
+            Entry::new(trigger, &action, None),
+            Some(action),
+        ));
     }
     if let Some(entry) = label_entry(active, button, pad) {
-        return Some(MappedEntry {
-            origin: Origin::Focused,
-            kind: TriggerKind::Pad,
-            entry,
-            action: None,
-            phrases: Vec::new(),
-        });
+        return Some(pad_mapped(Origin::Focused, entry, None));
     }
     let focused_maps = active.is_some_and(|context| context.action_for(button).is_some());
     let (origin, context) = if focused_maps {
@@ -629,13 +615,21 @@ fn normal_button_entry(
                 mods: Vec::new(),
             })
         })?;
-    Some(MappedEntry {
+    Some(pad_mapped(
+        origin,
+        mapped_entry(trigger, context, button, &action),
+        Some(action),
+    ))
+}
+
+const fn pad_mapped(origin: Origin, entry: Entry, action: Option<Action>) -> MappedEntry {
+    MappedEntry {
         origin,
         kind: TriggerKind::Pad,
-        entry: mapped_entry(trigger, context, button, &action),
-        action: Some(action),
+        entry,
+        action,
         phrases: Vec::new(),
-    })
+    }
 }
 
 /// The focused context's stick mappings for the held modifier, or the unmodified ones.
@@ -823,28 +817,29 @@ fn speech_entries(
             .cmp(&left_icon.is_some())
             .then_with(|| left.cmp(right))
     });
-    groups
-        .into_iter()
-        .map(|(origin, action, icon, phrases)| {
-            let mut trigger = phrases
-                .iter()
-                .take(PHRASES_SHOWN)
-                .map(|phrase| format!("\"{phrase}\""))
-                .collect::<Vec<_>>()
-                .join(" / ");
-            if phrases.len() > PHRASES_SHOWN {
-                trigger.push_str(" /\u{2026}");
-            }
-            let entry = Entry::new(vec![Piece::Text(trigger)], &action, icon.as_deref());
-            MappedEntry {
-                origin,
-                kind: TriggerKind::Voice,
-                entry,
-                action: Some(action),
-                phrases,
-            }
-        })
-        .collect()
+    groups.into_iter().map(format_speech_group).collect()
+}
+
+fn format_speech_group(
+    (origin, action, icon, phrases): (Origin, Action, Option<String>, Vec<String>),
+) -> MappedEntry {
+    let mut trigger = phrases
+        .iter()
+        .take(PHRASES_SHOWN)
+        .map(|phrase| format!("\"{phrase}\""))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    if phrases.len() > PHRASES_SHOWN {
+        trigger.push_str(" /\u{2026}");
+    }
+    let entry = Entry::new(vec![Piece::Text(trigger)], &action, icon.as_deref());
+    MappedEntry {
+        origin,
+        kind: TriggerKind::Voice,
+        entry,
+        action: Some(action),
+        phrases,
+    }
 }
 
 /// The phrase without the punctuation the speech engine ends a sentence with.

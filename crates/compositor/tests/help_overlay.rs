@@ -108,7 +108,10 @@ down = { key = "down" }
             text: Text::new("What can I say?".into())?,
         });
         assert!(compositor.help_overlay().is_some());
-        assert_eq!(compositor.driver_scene()["overlays"]["help_overlay"], true);
+        assert_eq!(
+            compositor.driver_scene()["overlays"]["help_overlay"],
+            serde_json::json!(true)
+        );
 
         let first = buffer
             .element(&mut renderer, &compositor, &out)?

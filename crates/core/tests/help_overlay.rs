@@ -207,7 +207,7 @@ south = "Primary"
     }
 
     #[test]
-    fn groups_focused_context_and_global_layer_and_annotates_pad_voice_names() {
+    fn groups_focused_context_and_global_layer_without_shadowed_duplicates() {
         let state = focused_state(&[GLOBAL, EDITOR], Some("org.example.Editor"));
         let overlay = state.core().help_overlay(&[]);
         assert_eq!(overlay.context_name(), Some("Editor"));
@@ -222,7 +222,6 @@ south = "Primary"
             ],
             "focused context groups precede global groups"
         );
-
         let focused_voice = &overlay.groups()[0];
         assert!(
             focused_voice
@@ -231,8 +230,6 @@ south = "Primary"
                 .any(|item| item.voice_name.as_deref() == Some("Save")),
             "focused voice lists shortest synonym as voice name: {focused_voice:?}"
         );
-
-        // Focused "Escape." shadows global "Escape." so it only appears under FocusedVoice.
         let global_voice = &overlay.groups()[2];
         assert!(
             !global_voice
@@ -248,8 +245,12 @@ south = "Primary"
                 .any(|item| item.voice_name.as_deref() == Some("Close window")),
             "unshadowed global phrase appears in GlobalVoice"
         );
+    }
 
-        // South maps Ctrl+S, which also has the spoken phrase "Save" in Editor.
+    #[test]
+    fn focused_pad_annotates_shared_voice_names_and_includes_sticks() {
+        let state = focused_state(&[GLOBAL, EDITOR], Some("org.example.Editor"));
+        let overlay = state.core().help_overlay(&[]);
         let focused_pad = &overlay.groups()[1];
         let save_pad = focused_pad
             .items
@@ -267,8 +268,6 @@ south = "Primary"
             Some("Save"),
             "pad control shares the voice name of its action"
         );
-
-        // Stick mapping is included in FocusedPad.
         assert!(
             focused_pad.items.iter().any(|item| {
                 item.target
@@ -542,6 +541,34 @@ south = "Primary"
         }
     }
 
+    fn core_at_level(list: Vec<Context>, focused: Option<&str>, pad: PadFamily, level: Level) -> CoreState {
+        let mut core = CoreState::with_contexts(list);
+        core.set_pad_family(pad);
+        if let Some(app_id) = focused {
+            core = tehuti_core::step(
+                core,
+                &Event::Focus {
+                    app_id: Some(app_id.into()),
+                    title: String::new(),
+                },
+            )
+            .0;
+        }
+        if level == Level::Columns {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                core = tehuti_core::step(
+                    core,
+                    &Event::Button {
+                        name: ButtonName::Guide,
+                        state,
+                    },
+                )
+                .0;
+            }
+        }
+        core
+    }
+
     proptest! {
         #[test]
         fn overlay_contains_every_ticker_entry_and_dpad_walks_every_item_cleanly(
@@ -553,33 +580,7 @@ south = "Primary"
             let list = contexts(sources);
             let focused = use_editor.then_some("org.example.Editor");
             let ticker_entries = ticker::entries(&list, focused, pad, level);
-            let mut core = CoreState::with_contexts(list);
-            core.set_pad_family(pad);
-            if let Some(app_id) = focused {
-                core = tehuti_core::step(
-                    core,
-                    &Event::Focus {
-                        app_id: Some(app_id.into()),
-                        title: String::new(),
-                    },
-                ).0;
-            }
-            if level == Level::Columns {
-                core = tehuti_core::step(
-                    core,
-                    &Event::Button {
-                        name: ButtonName::Guide,
-                        state: ButtonState::Pressed,
-                    },
-                ).0;
-                core = tehuti_core::step(
-                    core,
-                    &Event::Button {
-                        name: ButtonName::Guide,
-                        state: ButtonState::Released,
-                    },
-                ).0;
-            }
+            let core = core_at_level(list, focused, pad, level);
             let mut overlay = core.help_overlay(&[]);
             let overlay_triggers: Vec<_> = overlay
                 .groups()
@@ -600,8 +601,7 @@ south = "Primary"
                 prop_assert!(overlay.selected_item().is_some());
                 prop_assert!(overlay.visible_range().contains(&overlay.selected_index()));
             }
-            let last_group = overlay.groups().len().saturating_sub(1);
-            prop_assert_eq!(overlay.active_group_index(), last_group);
+            prop_assert_eq!(overlay.active_group_index(), overlay.groups().len().saturating_sub(1));
             for _ in 0..total_items.saturating_add(3) {
                 overlay.step_entry(false);
                 prop_assert!(overlay.selected_item().is_some());
