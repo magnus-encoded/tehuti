@@ -5830,22 +5830,22 @@ fn brightness_clamps_steps_at_bounds_and_east_reverts() {
     assert_eq!(last_brightness(&world), Some(98));
 
     let mut low_world = World::default();
-    let state = low_world.run(State::default(), speech_event("brightness"));
-    let state = low_world.run(state, Input::Brightness(Some(3)));
-    let state = tap_button(&mut low_world, state, ButtonName::DpadDown);
+    let low_state = low_world.run(State::default(), speech_event("brightness"));
+    let low_state = low_world.run(low_state, Input::Brightness(Some(3)));
+    let low_state = tap_button(&mut low_world, low_state, ButtonName::DpadDown);
     assert_eq!(
-        state.adjuster().map(crate::adjuster::Gauge::value),
+        low_state.adjuster().map(crate::adjuster::Gauge::value),
         Some(i32::from(BRIGHTNESS_MIN))
     );
     assert_eq!(
-        state
+        low_state
             .adjuster()
             .map(crate::adjuster::Gauge::unit_label)
             .as_deref(),
         Some("brightness minimum")
     );
-    let state = tap_button(&mut low_world, state, ButtonName::East);
-    assert!(state.adjuster().is_none(), "back must close at lower bound");
+    let low_state = tap_button(&mut low_world, low_state, ButtonName::East);
+    assert!(low_state.adjuster().is_none(), "back must close at lower bound");
     assert_eq!(last_brightness(&low_world), Some(3));
 }
 
