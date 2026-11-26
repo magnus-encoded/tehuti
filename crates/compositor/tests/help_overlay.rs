@@ -108,10 +108,10 @@ down = { key = "down" }
             text: Text::new("What can I say?".into())?,
         });
         assert!(compositor.help_overlay().is_some());
-        assert_eq!(
-            compositor.driver_scene()["overlays"]["help_overlay"],
-            serde_json::json!(true)
-        );
+        let directory = tempfile::tempdir()?;
+        let mut driver = tehuti::driver::Driver::bind(directory.path(), tehuti::backend::Backend::Nested)?;
+        let scene = driver.execute(&mut compositor, tehuti::driver::Request::Scene)?;
+        assert_eq!(scene["overlays"]["help_overlay"], serde_json::json!(true));
 
         let first = buffer
             .element(&mut renderer, &compositor, &out)?
