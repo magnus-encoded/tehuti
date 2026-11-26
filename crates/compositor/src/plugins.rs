@@ -324,6 +324,53 @@ impl Plugins {
         }
     }
 
+    /// Every ready plugin's registered mode toggles, in manifest order.
+    pub(crate) fn toggles(&self) -> Vec<(usize, tehuti_protocol::Toggle)> {
+        self.entries
+            .iter()
+            .filter_map(|entry| {
+                let session = entry.session.as_ref()?.borrow();
+                (session.status == Status::Ready).then(|| {
+                    session
+                        .toggles
+                        .iter()
+                        .cloned()
+                        .map(|toggle| (entry.plugin, toggle))
+                        .collect::<Vec<_>>()
+                })
+            })
+            .flatten()
+            .collect()
+    }
+
+    /// Updates a ready plugin's toggle state and notifies it with a `toggle` notice.
+    pub(crate) fn set_toggle(&mut self, plugin: usize, name: String, active: bool) {
+        let Some(entry) = self.entries.iter_mut().find(|entry| entry.plugin == plugin) else {
+            return;
+        };
+        let Some(session) = &entry.session else {
+            return;
+        };
+        let mut session = session.borrow_mut();
+        if session.status != Status::Ready {
+            return;
+        }
+        let Some(toggle) = session.toggles.iter_mut().find(|toggle| toggle.name() == name) else {
+            return;
+        };
+        toggle.set_active(active);
+        if let Err(error) = session.queue(&Call {
+            jsonrpc: RpcVersion::Two,
+            request_id: None,
+            method: Method::Toggle { name, active },
+        }) {
+            tracing::warn!(%error, "plugin toggle update dropped");
+        }
+        if let Some(wake) = &entry.wake {
+            wake();
+        }
+    }
+
     #[must_use]
     pub fn initialized_count(&self) -> usize {
         self.entries
@@ -997,6 +1044,7 @@ fn deliver(
                 compositor.set_pad_overrides(plugin, overrides);
             }
             Delivery::SpeechHints => compositor.refresh_speech_vocabulary(),
+            Delivery::Toggles => compositor.sync_plugin_toggles(),
             Delivery::Notice(actions) => apply_notice(compositor, actions, later),
         }
     }
@@ -1005,6 +1053,7 @@ fn deliver(
 fn fuzz_manifest() -> Manifest {
     Manifest {
         adjusters: Vec::new(),
+        toggles: Vec::new(),
         plugin_id: None,
         author: None,
         security_contact: None,
@@ -1129,6 +1178,7 @@ mod tests {
     fn plugins_cannot_request_secret_delivery() {
         let manifest = Manifest {
             adjusters: Vec::new(),
+            toggles: Vec::new(),
             plugin_id: None,
             author: None,
             security_contact: None,
@@ -1157,6 +1207,7 @@ mod tests {
         fn manifest(index: usize) -> Manifest {
             Manifest {
                 adjusters: Vec::new(),
+                toggles: Vec::new(),
                 plugin_id: None,
                 author: None,
                 security_contact: None,

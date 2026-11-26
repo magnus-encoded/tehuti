@@ -61,6 +61,8 @@ fn reference() -> Result<(), Error> {
             | Method::PadOverrides { .. }
             | Method::Notice { .. }
             | Method::Status { .. }
+            | Method::Toggle { .. }
+            | Method::Toggles { .. }
             | Method::PadInput { .. } => return Err("unexpected reference workload".into()),
         };
         output.write_all(&serde_json::to_vec(&reply)?)?;

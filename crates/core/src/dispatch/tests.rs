@@ -93,6 +93,7 @@ impl World {
                     | Effect::LauncherUsed(_)
                     | Effect::OpenLauncher(_)
                     | Effect::AdjusterValue { .. }
+                    | Effect::ModeToggleChanged { .. }
                     | Effect::ReadVolume
                     | Effect::ReadWindowSize(_)
                     | Effect::SetWindowSize { .. }

@@ -175,4 +175,120 @@ mod contract {
             assert!(parse_message(line.as_bytes()).is_err(), "{line}");
         }
     }
+
+    #[test]
+    fn toggles_manifest_validates_names_limits_and_reserved() {
+        let app_manifest = serde_json::json!({
+            "executable": "./toggle.py",
+            "app_ids": ["app"],
+            "events": [],
+            "start": "always",
+            "permissions": [],
+            "toggles": [
+                {"name": "Night Light"},
+                {"name": "stream mode", "active": true}
+            ]
+        });
+        let parsed = tehuti_protocol::parse_manifest(&serde_json::to_vec(&app_manifest).unwrap()).unwrap();
+        assert_eq!(parsed.toggles.len(), 2);
+        assert_eq!(parsed.toggles[0].name(), "night light");
+        assert!(!parsed.toggles[0].active(), "active defaults to false");
+        assert_eq!(parsed.toggles[1].name(), "stream mode");
+        assert!(parsed.toggles[1].active(), "explicit active true is preserved");
+
+        let verb_manifest = serde_json::json!({
+            "kind": "verb",
+            "verbs": ["ada"],
+            "executable": "./verb.py",
+            "app_ids": [],
+            "events": ["speech"],
+            "start": "always",
+            "permissions": ["text"],
+            "toggles": [{"name": "focus lens"}]
+        });
+        assert!(
+            tehuti_protocol::parse_manifest(&serde_json::to_vec(&verb_manifest).unwrap()).is_ok(),
+            "verb plugins may register toggles"
+        );
+
+        for bad_toggle in [
+            serde_json::json!({"name": ""}),
+            serde_json::json!({"name": "   "}),
+            serde_json::json!({"name": "stay awake"}),
+            serde_json::json!({"name": "Microphone Mute."}),
+            serde_json::json!({"name": "DO NOT DISTURB"}),
+            serde_json::json!({"name": "on"}),
+            serde_json::json!({"name": "off"}),
+            serde_json::json!({"name": "lights on"}),
+            serde_json::json!({"name": "lights off"}),
+            serde_json::json!({"name": "a\nb"}),
+            serde_json::json!({"name": "a".repeat(25)}),
+            serde_json::json!({"name": "night light", "extra": 1}),
+        ] {
+            let manifest = serde_json::json!({
+                "executable": "./toggle.py",
+                "app_ids": [],
+                "events": [],
+                "start": "always",
+                "permissions": [],
+                "toggles": [bad_toggle]
+            });
+            assert!(
+                tehuti_protocol::parse_manifest(&serde_json::to_vec(&manifest).unwrap()).is_err(),
+                "{manifest}"
+            );
+        }
+    }
+
+    #[test]
+    fn toggles_notices_and_manifest_caps_validate_and_round_trip() {
+        let duplicate = serde_json::json!({
+            "executable": "./toggle.py",
+            "app_ids": [],
+            "events": [],
+            "start": "always",
+            "permissions": [],
+            "toggles": [{"name": "Night Light"}, {"name": "night light."}]
+        });
+        assert!(
+            tehuti_protocol::parse_manifest(&serde_json::to_vec(&duplicate).unwrap()).is_err(),
+            "duplicate normalized toggle names must be rejected"
+        );
+
+        let too_many: Vec<_> = (0..33)
+            .map(|index| serde_json::json!({"name": format!("mode {index}")}))
+            .collect();
+        let over_limit = serde_json::json!({
+            "executable": "./toggle.py",
+            "app_ids": [],
+            "events": [],
+            "start": "always",
+            "permissions": [],
+            "toggles": too_many
+        });
+        assert!(
+            tehuti_protocol::parse_manifest(&serde_json::to_vec(&over_limit).unwrap()).is_err(),
+            "more than 32 toggles must be rejected"
+        );
+
+        for good in [
+            r#"{"jsonrpc":"2.0","method":"toggle","params":{"name":"night light","active":true}}"#,
+            r#"{"jsonrpc":"2.0","method":"toggles","params":{"toggles":[{"name":"night light","active":false}]}}"#,
+        ] {
+            let message = parse_message(good.as_bytes()).unwrap();
+            assert_eq!(
+                parse_message(&serde_json::to_vec(&message).unwrap()).unwrap(),
+                message
+            );
+        }
+        for bad in [
+            r#"{"jsonrpc":"2.0","id":1,"method":"toggle","params":{"name":"night light","active":true}}"#,
+            r#"{"jsonrpc":"2.0","id":1,"method":"toggles","params":{"toggles":[]}}"#,
+            r#"{"jsonrpc":"2.0","method":"toggle","params":{"name":"lights on","active":true}}"#,
+            r#"{"jsonrpc":"2.0","method":"toggle","params":{"name":"","active":true}}"#,
+            r#"{"jsonrpc":"2.0","method":"toggles","params":{"toggles":[{"name":"stay awake"}]}}"#,
+        ] {
+            assert!(parse_message(bad.as_bytes()).is_err(), "{bad}");
+        }
+    }
 }

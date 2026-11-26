@@ -79,7 +79,7 @@ the core sends an unknown method to a plugin, the plugin can reply with error
 The core ignores valid plugin `initialize`, `button`, `speech`, `verb`,
 `focus`, `adjuster` and `pad_input` calls. A plugin sends only replies and
 these notices: `actions`, `speech.hints`, `speech.language`, `invoke.words`, `verbs`,
-`pad_overrides`, `status` and `notice`. It can also send `submit_actions` requests.
+`pad_overrides`, `status`, `notice`, `toggle` and `toggles`. It can also send `submit_actions` requests.
 
 Sometimes an `actions` notice lists a `key` action directly followed by a
 `text` action. Then the core waits 50 ms after the key. After that, it applies
@@ -872,3 +872,31 @@ both of these conditions are true:
 
 When several plugins qualify, the first in manifest order shows. A plugin exit
 clears its status.
+
+## Mode toggles
+
+A manifest can register up to 32 named mode toggles ahead of time, with `active`
+defaulting to `false`:
+
+```json
+{"executable":"./toggle.py","app_ids":[],"events":[],"start":"always","permissions":[],"toggles":[{"name":"night light","active":false}]}
+```
+
+Names normalize like speech phrases. Each name must be unique within the
+manifest, contain at most 24 characters after normalization, avoid control
+characters and trailing `on` or `off` words, and differ from the built-in modes
+(`stay awake`, `microphone mute`, `do not disturb`).
+
+A ready plugin can replace its registered toggles at any time with a `toggles`
+notice, or update the state of one of its own registered toggles with a `toggle`
+notice:
+
+```json
+{"jsonrpc":"2.0","method":"toggles","params":{"toggles":[{"name":"night light","active":true}]}}
+{"jsonrpc":"2.0","method":"toggle","params":{"name":"night light","active":false}}
+```
+
+When the user changes a plugin toggle by voice (`"night light on"` or
+`"night light off"`), on the Toggles settings page, or by turning off its active
+chip on the bar, the core sends a `toggle` notice to the owning plugin. A plugin
+exit clears its toggles and active chips.

@@ -93,6 +93,54 @@ impl Canvas {
         }
     }
 
+    pub(super) fn toggles(&mut self, settings: &Settings) {
+        let rows = [settings.toggles.len()];
+        let focus = clamp(
+            &rows,
+            Focus {
+                row: 0,
+                col: settings.toggles_focus,
+            },
+        );
+        let grid = Grid::new(&rows, 0, focus, Some(DISPLAY_SIDE));
+        let side = grid.side();
+        let name_points = side.checked_div(12).unwrap_or(10).max(10);
+        let state_points = side.checked_div(11).unwrap_or(10).max(10);
+        if let Some((x, y)) = grid.origin(0, 0) {
+            self.text(x, y.saturating_sub(28), "MODES", 2, AMBER);
+        }
+        for (col, toggle) in settings.toggles.items().iter().enumerate() {
+            let Some((x, y)) = self.tile_frame(&grid, (0, col), focus, toggle.active) else {
+                continue;
+            };
+            let colour = if toggle.active { WHITE } else { DIM };
+            let state_colour = if toggle.active { CYAN } else { DIM };
+            let art = side.saturating_mul(3) / 7;
+            self.svg_icon(
+                (
+                    x.saturating_add(side.saturating_sub(art) / 2),
+                    y.saturating_add(side / 12),
+                ),
+                art,
+                if toggle.active { "toggle-on" } else { "toggle-off" },
+                state_colour,
+            );
+            self.tile_text(
+                (x, y.saturating_add(side / 2), side, side.saturating_mul(3) / 10),
+                &[toggle.name.to_uppercase()],
+                name_points,
+                colour,
+            );
+            self.tile_foot(
+                (x, y),
+                side,
+                if toggle.active { "ON" } else { "OFF" },
+                state_points,
+                state_colour,
+            );
+        }
+    }
+
     pub(super) fn display(&mut self, settings: &Settings) {
         let rows = settings.display_rows();
         let focus = clamp(&rows, settings.display_focus);

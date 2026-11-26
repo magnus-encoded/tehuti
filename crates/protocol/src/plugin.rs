@@ -141,6 +141,8 @@ pub struct Manifest {
     pub verbs: Vec<Verb>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub adjusters: Vec<crate::Adjuster>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub toggles: Vec<crate::Toggle>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     #[serde(rename = "id")]
     pub plugin_id: Option<String>,
@@ -176,6 +178,7 @@ pub fn parse_manifest(bytes: &[u8]) -> Result<Manifest, String> {
     {
         return Err("adjuster names must be unique, with at most 32 registrations".into());
     }
+    crate::validate_toggles(&manifest.toggles)?;
     validate_kind(&manifest)?;
     Ok(manifest)
 }
@@ -241,6 +244,15 @@ pub enum Method {
         name: String,
         value: i32,
         finished: bool,
+    },
+    /// Sets one registered mode toggle's state, in either direction.
+    Toggle {
+        name: String,
+        active: bool,
+    },
+    /// Replaces the sending plugin's registered mode toggles.
+    Toggles {
+        toggles: Vec<crate::Toggle>,
     },
     Initialize(Initialize),
     Button {
@@ -347,6 +359,8 @@ fn validate_notice(method: &Method) -> Result<(), String> {
         Method::SpeechLanguage { language } if !valid_language(language) => {
             Err("language is 2 to 8 lowercase ASCII letters".into())
         }
+        Method::Toggle { name, .. } => crate::validate_toggle_name(name).map(|_| ()),
+        Method::Toggles { toggles } => crate::validate_toggles(toggles),
         Method::Adjuster { .. }
         | Method::Initialize(_)
         | Method::Button { .. }

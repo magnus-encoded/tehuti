@@ -89,7 +89,7 @@ impl Buffer {
         let segments = bar.segments();
         let unit = usize::try_from(scale).ok()?;
         let width = usize::try_from(mode.size.w).ok()?;
-        let layout = Layout::new(&segments, width, unit, bar.level(), bar.focused_window_segment());
+        let layout = Layout::new(&segments, width, unit, bar.level(), bar.focused_bar_segment());
         let viewport = layout.ticker.1.saturating_sub(layout.ticker.0);
         let ticker = bar
             .ticker()
@@ -271,6 +271,8 @@ const fn colour(tone: Tone) -> [u8; 4] {
         Tone::Live => [119, 88, 36, 255],
         Tone::Result => [77, 96, 42, 255],
         Tone::Error => [65, 53, 138, 255],
+        Tone::Mode => [42, 118, 168, 255],
+        Tone::ModeFocused => [200, 178, 52, 255],
     }
 }
 
@@ -309,11 +311,12 @@ fn raster(
         if key.1 == tehuti_core::Level::Columns {
             let limit = layout.scroll.saturating_add(layout.clock_start);
             let end = (*end).min(limit);
-            canvas.rectangle(
-                start.saturating_sub(layout.scroll).min(layout.clock_start),
-                end.saturating_sub(layout.scroll),
-                colour(segment.tone),
-            );
+            let left = start.saturating_sub(layout.scroll).min(layout.clock_start);
+            let right = end.saturating_sub(layout.scroll);
+            canvas.rectangle(left, right, colour(segment.tone));
+            if segment.tone == Tone::ModeFocused {
+                canvas.focus_edges(left, right, unit);
+            }
             canvas.scrolled_text(
                 &segment.text,
                 (
@@ -358,12 +361,25 @@ impl Canvas {
                 self.pixel(column, row, background);
             }
         }
+        if segment.tone == Tone::ModeFocused {
+            self.focus_edges(start, end, unit);
+        }
         self.text(
             &segment.text,
             start.saturating_add(18usize.saturating_mul(unit)),
             end.saturating_sub(4usize.saturating_mul(unit)),
             unit,
         );
+    }
+
+    fn focus_edges(&mut self, start: usize, end: usize, unit: usize) {
+        let thickness = 2usize.saturating_mul(unit).min(self.height / 4).max(1);
+        let edge = [244, 240, 225, 255];
+        for row in (0..thickness).chain(self.height.saturating_sub(thickness)..self.height) {
+            for column in start..end {
+                self.pixel(column, row, edge);
+            }
+        }
     }
 
     fn pixel(&mut self, column: usize, row: usize, colour: [u8; 4]) {

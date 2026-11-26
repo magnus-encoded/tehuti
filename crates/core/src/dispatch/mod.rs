@@ -41,6 +41,7 @@ pub enum Input {
     /// Reply to [`Effect::ReadWindowSize`]: the focused window's size in millionths of the screen.
     WindowSize(Option<u32>),
     Adjusters(Vec<(usize, tehuti_protocol::Adjuster)>),
+    PluginToggles(Vec<(usize, tehuti_protocol::Toggle)>),
     ChoiceList(crate::choice_list::Slots),
     DisplayModes {
         modes: Vec<String>,
@@ -141,6 +142,12 @@ pub enum Effect {
         name: String,
         value: i32,
         finished: bool,
+    },
+    /// A built-in or plugin mode toggle changed state.
+    ModeToggleChanged {
+        owner: crate::toggles::Owner,
+        name: String,
+        active: bool,
     },
     ReadVolume,
     /// Query: read the focused window's size. Reply [`Input::WindowSize`].
@@ -337,6 +344,10 @@ pub struct State {
     adjuster_buttons: Vec<ButtonName>,
     /// The left stick's last vertical sample, so a gauge opens already moving.
     adjuster_stick: i16,
+    /// Focused index among active mode chips on the bar, at columns level.
+    bar_chip_focus: Option<usize>,
+    /// Buttons consumed while focusing a bar chip, held through release.
+    bar_buttons: Vec<ButtonName>,
 }
 
 impl State {
@@ -369,6 +380,8 @@ impl State {
             adjusters: Vec::new(),
             adjuster_buttons: Vec::new(),
             adjuster_stick: 0,
+            bar_chip_focus: None,
+            bar_buttons: Vec::new(),
         }
     }
 
@@ -424,6 +437,16 @@ impl State {
     #[must_use]
     pub const fn settings(&self) -> &Settings {
         &self.settings
+    }
+
+    #[must_use]
+    pub const fn toggles(&self) -> &crate::toggles::Toggles {
+        &self.settings.toggles
+    }
+
+    #[must_use]
+    pub const fn bar_chip_focus(&self) -> Option<usize> {
+        self.bar_chip_focus
     }
 
     #[must_use]
@@ -663,12 +686,16 @@ fn routed_step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             gauge.revert();
             released.push(adjuster_effect(&gauge, true));
         }
+        state.bar_chip_focus = None;
+        state.bar_buttons.clear();
     }
     let (mut state, mut routed) = step_input(state, input);
     let mut effects = released;
     effects.append(&mut routed);
+    sync_bar_toggles(&mut state);
     release_on_open(&mut state, &mut effects);
     release_passthrough_overlays(&mut state, &mut effects);
+    sync_bar_toggles(&mut state);
     state.overlay_stack = open_overlays(&state);
     run(state, effects)
 }
@@ -726,6 +753,10 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         }
         Input::Adjusters(registrations) => {
             state.adjusters = registrations;
+            (state, Vec::new())
+        }
+        Input::PluginToggles(registrations) => {
+            state.settings.sync_plugin_toggles(registrations);
             (state, Vec::new())
         }
         Input::Volume(value) => (volume_read(state, value), Vec::new()),
@@ -799,6 +830,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::Launcher(_)
         | Input::CloseInvitation
         | Input::Adjusters(_)
+        | Input::PluginToggles(_)
         | Input::Volume(_)
         | Input::WindowSize(_)
         | Input::ChoiceList(_)
@@ -859,6 +891,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::Launcher(_)
         | Input::CloseInvitation
         | Input::Adjusters(_)
+        | Input::PluginToggles(_)
         | Input::Volume(_)
         | Input::WindowSize(_)
         | Input::ChoiceList(_)
@@ -904,6 +937,7 @@ fn run_tasks(mut state: State, tasks: Vec<Task>, effects: Vec<Effect>) -> (State
 }
 
 /// Inputs that only update the settings view.
+#[expect(clippy::too_many_lines, reason = "one exhaustive match over settings inputs")]
 fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {
@@ -940,6 +974,7 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::Launcher(_)
         | Input::CloseInvitation
         | Input::Adjusters(_)
+        | Input::PluginToggles(_)
         | Input::Volume(_)
         | Input::WindowSize(_)
         | Input::ChoiceList(_)
@@ -990,6 +1025,8 @@ fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
     release_pad(state, Handoff::Disconnect, effects);
     state.opening_button = None;
     state.choice_buttons.clear();
+    state.bar_buttons.clear();
+    state.bar_chip_focus = None;
     state.core.controller_disconnected();
 }
 
@@ -1061,6 +1098,7 @@ fn release_layer(state: &mut State, layer: Overlay, handoff: Handoff, effects: &
             }
         }
         Overlay::Mouse => release_pointer(state, handoff, effects),
+        Overlay::Bar => state.bar_chip_focus = None,
         Overlay::Application => release_held_keys(state, effects),
         Overlay::Cursor
         | Overlay::Settings
@@ -1069,8 +1107,7 @@ fn release_layer(state: &mut State, layer: Overlay, handoff: Handoff, effects: &
         | Overlay::Secret
         | Overlay::SecretUnavailable
         | Overlay::Notice
-        | Overlay::MouseNotice
-        | Overlay::Bar => {}
+        | Overlay::MouseNotice => {}
     }
 }
 
@@ -1121,11 +1158,11 @@ fn open_overlays(state: &State) -> Vec<Overlay> {
             Overlay::Secret => state.secret_prompt == SecretPrompt::Visible,
             Overlay::Keyboard => state.keyboard.is_open(),
             Overlay::Mouse => state.mouse.active(),
+            Overlay::Bar => state.bar_chip_focus.is_some(),
             Overlay::Cursor
             | Overlay::SecretUnavailable
             | Overlay::Notice
             | Overlay::MouseNotice
-            | Overlay::Bar
             | Overlay::Application => false,
         })
         .collect()
@@ -1349,6 +1386,7 @@ fn finish_route(
 /// Runs the top frame until it emits effects, waits for a reply or empties.
 fn run(mut state: State, mut effects: Vec<Effect>) -> (State, Vec<Effect>) {
     loop {
+        sync_bar_toggles(&mut state);
         let Some(frame) = state.frames.last_mut() else {
             return (state, effects);
         };
@@ -1366,6 +1404,7 @@ fn run(mut state: State, mut effects: Vec<Effect>) -> (State, Vec<Effect>) {
             return (state, effects);
         };
         perform(&mut state, task, &mut effects);
+        sync_bar_toggles(&mut state);
         release_on_open(&mut state, &mut effects);
     }
 }
@@ -1382,6 +1421,7 @@ fn perform(state: &mut State, task: Task, effects: &mut Vec<Effect>) {
         Task::ResetSecretFocus => effects.push(Effect::ResetSecretFocus),
         Task::PollSources => effects.push(Effect::PollSources),
         Task::PluginExited(plugin) => {
+            state.settings.remove_plugin_toggles(plugin);
             let (next, actions, _) = crate::plugin::step(
                 core::mem::take(&mut state.core),
                 crate::plugin::Input::Exited { plugin },
@@ -1659,6 +1699,7 @@ fn guide_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
         }
     ) {
         state.settings.close(effects);
+        state.bar_chip_focus = None;
     }
     let _response = state.keyboard.button(ButtonName::Guide, start_state(event), true);
     if let Some(actions) = crate::escape_chord(&mut state.core, event) {
@@ -1671,15 +1712,19 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
         name,
         state: ButtonState::Released,
     } = event
-        && (state.choice_buttons.contains(name) || state.adjuster_buttons.contains(name))
+        && (state.choice_buttons.contains(name)
+            || state.adjuster_buttons.contains(name)
+            || state.bar_buttons.contains(name))
     {
         state.adjuster_buttons.retain(|held| held != name);
         state.choice_buttons.retain(|held| held != name);
+        state.bar_buttons.retain(|held| held != name);
         return true;
     }
     sync_keyboard_config(state);
     let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
     if adjuster_phrase(state, event, dictation, effects)
+        || mode_toggle_phrase(state, event, dictation, effects)
         || settings_phrase(state, event, dictation, effects)
         || crate::menu_button_release(&mut state.core, event)
         || reserved_safety(state, event, dictation, effects)
@@ -1689,6 +1734,119 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
     STACK
         .into_iter()
         .any(|layer| overlay_input(state, layer, event, dictation, effects))
+}
+
+fn sync_bar_toggles(state: &mut State) {
+    let active = state.settings.toggles.active_items();
+    if state.core.level() != crate::Level::Columns || active.is_empty() {
+        state.bar_chip_focus = None;
+    } else if let Some(index) = state.bar_chip_focus {
+        state.bar_chip_focus = Some(index.min(active.len().saturating_sub(1)));
+    }
+    let chips: Vec<(String, bool)> = active
+        .iter()
+        .enumerate()
+        .map(|(index, item)| (item.display_name(), state.bar_chip_focus == Some(index)))
+        .collect();
+    state.core.bar.set_mode_chips(chips);
+}
+
+fn mode_toggle_phrase(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
+    if dictation
+        || state.keyboard.password_field_active()
+        || state.choice_list_open()
+        || state.core.menu().is_some()
+        || state.adjuster.is_some()
+    {
+        return false;
+    }
+    let Event::Speech { text } = event else {
+        return false;
+    };
+    let Some((name, active)) = state.settings.toggles.parse_voice_destination(text.as_str()) else {
+        return false;
+    };
+    if let Some(outcome) = state.settings.toggles.set(&name, active)
+        && outcome.changed
+    {
+        effects.push(Effect::ModeToggleChanged {
+            owner: outcome.toggle.owner,
+            name: outcome.toggle.name,
+            active: outcome.toggle.active,
+        });
+    }
+    true
+}
+
+fn enter_bar_chip_focus(state: &mut State, name: ButtonName, button: ButtonState) -> bool {
+    if button == ButtonState::Pressed
+        && name == ButtonName::DpadDown
+        && state.core.level() == crate::Level::Columns
+        && !state.keyboard.is_open()
+        && !state.mouse.active()
+        && !state.settings.toggles.active_items().is_empty()
+    {
+        state.bar_chip_focus = Some(0);
+        if !state.bar_buttons.contains(&name) {
+            state.bar_buttons.push(name);
+        }
+        return true;
+    }
+    false
+}
+
+fn bar_chip_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    let Event::Button { name, state: button } = event else {
+        return false;
+    };
+    if state.core.guide_held() || state.core.push_to_talk(*name) {
+        return false;
+    }
+    let Some(index) = state.bar_chip_focus else {
+        return enter_bar_chip_focus(state, *name, *button);
+    };
+    if *button == ButtonState::Released {
+        state.bar_buttons.retain(|held| held != name);
+        return true;
+    }
+    if !state.bar_buttons.contains(name) {
+        state.bar_buttons.push(*name);
+    }
+    let active_count = state.settings.toggles.active_items().len();
+    if active_count == 0 {
+        state.bar_chip_focus = None;
+        return true;
+    }
+    let current = index.min(active_count.saturating_sub(1));
+    step_bar_chip_focus(state, *name, current, active_count, effects);
+    true
+}
+
+fn step_bar_chip_focus(
+    state: &mut State,
+    name: ButtonName,
+    current: usize,
+    active_count: usize,
+    effects: &mut Vec<Effect>,
+) {
+    let family = state.core.pad_family();
+    if matches!(name, ButtonName::DpadLeft | ButtonName::LeftBumper) {
+        state.bar_chip_focus = Some(current.saturating_sub(1));
+    } else if matches!(name, ButtonName::DpadRight | ButtonName::RightBumper) {
+        state.bar_chip_focus = Some(current.saturating_add(1).min(active_count.saturating_sub(1)));
+    } else if name == family.button(crate::pad::Role::Confirm) {
+        if let Some(updated) = state.settings.toggles.turn_off_active(current) {
+            effects.push(Effect::ModeToggleChanged {
+                owner: updated.owner,
+                name: updated.name,
+                active: false,
+            });
+        }
+        let remaining = state.settings.toggles.active_items().len();
+        state.bar_chip_focus = (remaining > 0).then(|| current.min(remaining.saturating_sub(1)));
+    } else if name == family.button(crate::pad::Role::Back) || name == ButtonName::DpadUp {
+        state.bar_chip_focus = None;
+    }
 }
 
 fn settings_phrase(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
@@ -1752,12 +1910,12 @@ fn overlay_input(
         Overlay::Secret => secret_input(state, event),
         Overlay::Keyboard => keyboard(state, event, effects),
         Overlay::Mouse => mouse_event(state, event, effects),
+        Overlay::Bar => !dictation && bar_chip_input(state, event, effects),
         Overlay::Application
         | Overlay::Cursor
         | Overlay::SecretUnavailable
         | Overlay::Notice
-        | Overlay::MouseNotice
-        | Overlay::Bar => false,
+        | Overlay::MouseNotice => false,
     }
 }
 
@@ -2046,7 +2204,8 @@ fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>)
         effects.push(Effect::Apply(release));
     }
     if state.core.passthrough() {
-        if adjuster_phrase(state, &event, false, effects) {
+        if adjuster_phrase(state, &event, false, effects) || mode_toggle_phrase(state, &event, false, effects)
+        {
             return;
         }
         if !state.overlay_owns_pad() {

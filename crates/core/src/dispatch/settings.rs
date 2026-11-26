@@ -29,6 +29,7 @@ pub enum Page {
     Display,
     Input,
     Wallpaper,
+    Toggles,
 }
 
 /// A top-level entry of the settings view.
@@ -38,10 +39,11 @@ pub enum Category {
     Display,
     Input,
     Wallpaper,
+    Toggles,
 }
 
 impl Category {
-    pub const ALL: [Self; 3] = [Self::Display, Self::Input, Self::Wallpaper];
+    pub const ALL: [Self; 4] = [Self::Display, Self::Input, Self::Wallpaper, Self::Toggles];
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -52,6 +54,9 @@ pub struct Settings {
     /// The highlighted category on the categories page.
     pub category: Category,
     pub input: InputSettings,
+    pub toggles: crate::toggles::Toggles,
+    /// The focused tile on the Toggles page.
+    pub toggles_focus: usize,
     /// The focused tile of the Display page.
     pub display_focus: Focus,
     /// The resolution tile whose refresh rates the second row shows.
@@ -87,6 +92,7 @@ impl Settings {
                 }
                 Page::Display | Page::Input => format!("D-PAD: MOVE   {confirm}: APPLY   {back}: BACK"),
                 Page::Wallpaper => format!("D-PAD: PREVIEW   {confirm}: SAVE   {back}: CANCEL"),
+                Page::Toggles => format!("D-PAD: MOVE   {confirm}: FLIP   {back}: BACK"),
             }
         }
     }
@@ -352,6 +358,66 @@ impl Settings {
             Page::Display => self.display_button(name, effects),
             Page::Input => self.input_button(name, effects),
             Page::Wallpaper => self.wallpaper_button(name, effects),
+            Page::Toggles => self.toggles_button(name, effects),
+        }
+    }
+
+    pub(super) fn sync_plugin_toggles(&mut self, registrations: Vec<(usize, tehuti_protocol::Toggle)>) {
+        let focused = self
+            .toggles
+            .get(self.toggles_focus)
+            .map(|item| (item.owner, item.name.clone()));
+        self.toggles.sync_plugins(registrations);
+        if let Some((owner, name)) = focused
+            && let Some(index) = self
+                .toggles
+                .items()
+                .iter()
+                .position(|item| item.owner == owner && item.name == name)
+        {
+            self.toggles_focus = index;
+        } else {
+            self.toggles_focus = self.toggles_focus.min(self.toggles.len().saturating_sub(1));
+        }
+    }
+
+    pub(super) fn remove_plugin_toggles(&mut self, plugin: usize) {
+        let focused = self
+            .toggles
+            .get(self.toggles_focus)
+            .map(|item| (item.owner, item.name.clone()));
+        self.toggles.remove_plugin(plugin);
+        if let Some((owner, name)) = focused
+            && let Some(index) = self
+                .toggles
+                .items()
+                .iter()
+                .position(|item| item.owner == owner && item.name == name)
+        {
+            self.toggles_focus = index;
+        } else {
+            self.toggles_focus = self.toggles_focus.min(self.toggles.len().saturating_sub(1));
+        }
+    }
+
+    fn toggles_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        if name == self.pad_family.button(Role::Back) {
+            self.back(effects);
+        } else if matches!(name, ButtonName::DpadLeft | ButtonName::DpadUp) {
+            self.toggles_focus = self.toggles_focus.saturating_sub(1);
+        } else if matches!(name, ButtonName::DpadRight | ButtonName::DpadDown) {
+            self.toggles_focus = self
+                .toggles_focus
+                .saturating_add(1)
+                .min(self.toggles.len().saturating_sub(1));
+        } else if name == self.pad_family.button(Role::Confirm)
+            && let Some(updated) = self.toggles.flip_at(self.toggles_focus)
+        {
+            effects.push(Effect::ModeToggleChanged {
+                owner: updated.owner,
+                name: updated.name,
+                active: updated.active,
+            });
         }
     }
 
@@ -368,7 +434,7 @@ impl Settings {
                 self.category = Category::ALL
                     .get(self.category_index().saturating_add(1))
                     .copied()
-                    .unwrap_or(Category::Wallpaper);
+                    .unwrap_or(Category::Toggles);
             }
             name if name == self.pad_family.button(Role::Confirm) => match self.category {
                 Category::Display => {
@@ -386,6 +452,10 @@ impl Settings {
                 Category::Wallpaper => {
                     self.page = Page::Wallpaper;
                     self.wallpaper_selected = self.wallpaper_current;
+                }
+                Category::Toggles => {
+                    self.page = Page::Toggles;
+                    self.toggles_focus = self.toggles_focus.min(self.toggles.len().saturating_sub(1));
                 }
             },
             ButtonName::South
@@ -829,6 +899,8 @@ impl Default for Settings {
             page: Page::Categories,
             category: Category::Display,
             input: InputSettings::default(),
+            toggles: crate::toggles::Toggles::new(),
+            toggles_focus: 0,
             display_focus: Focus::default(),
             display_resolution: 0,
             current: 0,

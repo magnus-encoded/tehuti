@@ -246,6 +246,27 @@
           }
         }
       }
+    },
+    "toggles": {
+      "type": "array",
+      "maxItems": 32,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1,
+            "maxLength": 24
+          },
+          "active": {
+            "type": "boolean"
+          }
+        }
+      }
     }
   }
 }

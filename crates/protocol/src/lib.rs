@@ -1781,6 +1781,10 @@ fn validate_app_id(app_id: &str) -> Result<(), String> {
 
 mod adjuster;
 pub use adjuster::Adjuster;
+mod toggle;
+pub use toggle::{
+    MAX_TOGGLE_NAME_CHARS, MAX_TOGGLES, RESERVED_TOGGLE_NAMES, Toggle, validate_toggle_name, validate_toggles,
+};
 mod window_width;
 pub use window_width::{WindowWidth, fraction_value, nearest_fraction, rewrite_window_width, whole_pixels};
 mod sticks;
