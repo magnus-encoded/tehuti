@@ -42,6 +42,7 @@ while :; do
             failures="$recent $now"
             if [ "$count" -ge 2 ]; then
                 stay_in_plasma=true
+                printf '%s\n' "$now" > "$state_dir/rollback-offer"
                 echo 'Tehuti failed three times within 60 seconds; staying in Plasma'
             fi
         fi

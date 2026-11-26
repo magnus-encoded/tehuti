@@ -436,6 +436,7 @@ fn start_session(
     compositor.set_launch_socket(socket_name.clone());
     if driver.is_none() {
         restore_session(&mut compositor, &event_loop);
+        install_update_checks(&mut compositor, &event_loop);
     }
     if driver.is_none()
         && let Err(error) = insert_controller_watch(&event_loop)
@@ -526,6 +527,15 @@ fn start_session(
     let result = run(&mut event_loop, &mut data, child);
     let code = data.exit_code();
     if data.driver.is_none()
+        && result.is_ok()
+        && (data.log_out
+            || data.compositor.log_out_requested()
+            || data.compositor.quit_requested()
+            || data.compositor.restart_requested())
+    {
+        data.compositor.mark_session_healthy();
+    }
+    if data.driver.is_none()
         && tehuti::session_restore::save_due(
             result.is_ok(),
             data.compositor.quit_requested(),
@@ -569,6 +579,24 @@ fn save_session(compositor: &tehuti::state::Compositor) {
     let result = tehuti::session_restore::Store::from_env().and_then(|store| store.save(&saved));
     if let Err(error) = result {
         warn!(%error, "session not saved");
+    }
+}
+
+fn install_update_checks(compositor: &mut tehuti::state::Compositor, event_loop: &EventLoop<LoopData>) {
+    use smithay::reexports::calloop::timer::{TimeoutAction, Timer};
+    let Some(manager) = tehuti::update::Manager::from_env() else {
+        return;
+    };
+    let interval = manager.check_interval();
+    compositor.set_update_manager(manager);
+    compositor.check_for_updates();
+    let timer = Timer::from_duration(interval);
+    let armed = event_loop.handle().insert_source(timer, move |_, (), data| {
+        data.compositor.check_for_updates();
+        TimeoutAction::ToDuration(interval)
+    });
+    if let Err(error) = armed {
+        warn!(%error, "periodic release check timer unavailable");
     }
 }
 

@@ -97,6 +97,9 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::SpeechPolled(_)
         | DispatchInput::Wallpapers { .. }
         | DispatchInput::WallpaperSaved(_)
+        | DispatchInput::ReleaseInfo(_)
+        | DispatchInput::OfferRollback
+        | DispatchInput::UpdateFinished(_)
         | DispatchInput::Resume => core::time::Duration::ZERO,
     }
 }
@@ -140,6 +143,7 @@ pub struct Compositor {
     recentre_requests: Vec<String>,
     input_choices: Option<crate::input_choice_store::Store>,
     volume: Option<crate::volume::Backend>,
+    update_manager: Option<crate::update::Manager>,
     remote_host_listing: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
@@ -311,6 +315,7 @@ impl Compositor {
             recentre_requests: Vec::new(),
             input_choices: None,
             volume: None,
+            update_manager: None,
             remote_host_listing: None,
             microphone_listing: None,
             injected_clock: None,
@@ -472,6 +477,7 @@ impl Compositor {
             "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar,
             "menu_text": self.dispatch.core().menu().map(|menu| menu.clone().with_recording(self.recording_active()).text()),
             "notices": tehuti_core::overlay::STACK.into_iter().filter_map(|layer| self.overlay_notice(layer)).collect::<Vec<_>>(),
+            "update_confirmation": self.dispatch.update_confirmation_text(),
             "recording": self.recording_active()})
     }
 
@@ -503,6 +509,132 @@ impl Compositor {
     pub fn set_display_holders(&mut self, proc_root: std::path::PathBuf, device: std::path::PathBuf) {
         self.display_holders = Some((proc_root, device));
         self.scan_display_holders();
+    }
+
+    /// Installs the release update manager, loads local tags and offers rollback after repeated failed starts.
+    pub fn set_update_manager(&mut self, manager: crate::update::Manager) {
+        let (info, offer_rollback) = manager.initial_state(crate::update::unix_now_secs());
+        self.update_manager = Some(manager);
+        let _rejection = self.dispatch(DispatchInput::ReleaseInfo(info));
+        if offer_rollback {
+            let _rejection = self.dispatch(DispatchInput::OfferRollback);
+        }
+        self.refresh_speech_vocabulary();
+    }
+
+    /// Starts a non-blocking release check via `tehuti-update --check`.
+    pub fn check_for_updates(&mut self) {
+        if let Some(manager) = self.update_manager.as_mut() {
+            manager.start_check();
+        }
+    }
+
+    /// Marks the running session healthy so clean exits never count as failed starts.
+    pub fn mark_session_healthy(&mut self) {
+        if let Some(manager) = self.update_manager.as_mut() {
+            manager.mark_healthy();
+        }
+    }
+
+    /// Sets release metadata directly, for tests.
+    pub fn set_release_info(&mut self, info: tehuti_core::update::ReleaseInfo) {
+        let _rejection = self.dispatch(DispatchInput::ReleaseInfo(info));
+        self.refresh_speech_vocabulary();
+    }
+
+    /// Opens the repeated-failed-starts rollback offer directly, for tests.
+    pub fn offer_rollback(&mut self) {
+        let _rejection = self.dispatch(DispatchInput::OfferRollback);
+    }
+
+    /// Current release badge and update confirmation state.
+    #[must_use]
+    pub const fn update_state(&self) -> &tehuti_core::update::UpdateState {
+        self.dispatch.update()
+    }
+
+    fn apply_update(&mut self) {
+        let started = self
+            .update_manager
+            .as_mut()
+            .ok_or_else(|| "TEHUTI-UPDATE NOT CONFIGURED".to_owned())
+            .and_then(crate::update::Manager::start_apply);
+        match started {
+            Ok(()) => self.show_notice("UPDATING..."),
+            Err(reason) => {
+                tracing::warn!(%reason, "update could not start");
+                let _rejection = self.dispatch(DispatchInput::UpdateFinished(
+                    tehuti_core::update::Outcome::Failed(reason.clone()),
+                ));
+                self.show_notice(&format!("UPDATE FAILED: {reason}"));
+            }
+        }
+    }
+
+    fn apply_rollback(&mut self) {
+        let started = self
+            .update_manager
+            .as_mut()
+            .ok_or_else(|| "TEHUTI-UPDATE NOT CONFIGURED".to_owned())
+            .and_then(crate::update::Manager::start_rollback);
+        match started {
+            Ok(()) => self.show_notice("ROLLING BACK..."),
+            Err(reason) => {
+                tracing::warn!(%reason, "rollback could not start");
+                let _rejection = self.dispatch(DispatchInput::UpdateFinished(
+                    tehuti_core::update::Outcome::Failed(reason.clone()),
+                ));
+                self.show_notice(&format!("ROLLBACK FAILED: {reason}"));
+            }
+        }
+    }
+
+    fn poll_update(&mut self) {
+        let elapsed = self.clock_elapsed();
+        let (checked, finished) = {
+            let Some(manager) = self.update_manager.as_mut() else {
+                return;
+            };
+            manager.poll_healthy(elapsed);
+            (manager.poll_check(), manager.poll_action())
+        };
+        if let Some(info) = checked {
+            let _rejection = self.dispatch(DispatchInput::ReleaseInfo(info));
+            self.refresh_speech_vocabulary();
+        }
+        if let Some(result) = finished {
+            match result {
+                crate::update::ActionResult::Updated { installed, previous } => {
+                    let label = installed.as_deref().map_or_else(
+                        || "UPDATED: RESTART TEHUTI".to_owned(),
+                        |tag| format!("UPDATED TO {}: RESTART TEHUTI", tag.to_ascii_uppercase()),
+                    );
+                    let _rejection = self.dispatch(DispatchInput::UpdateFinished(
+                        tehuti_core::update::Outcome::Updated { installed, previous },
+                    ));
+                    self.show_notice(&label);
+                    self.refresh_speech_vocabulary();
+                }
+                crate::update::ActionResult::RolledBack { installed, previous } => {
+                    let label = installed.as_deref().map_or_else(
+                        || "ROLLED BACK: RESTART TEHUTI".to_owned(),
+                        |tag| format!("ROLLED BACK TO {}: RESTART TEHUTI", tag.to_ascii_uppercase()),
+                    );
+                    let _rejection = self.dispatch(DispatchInput::UpdateFinished(
+                        tehuti_core::update::Outcome::RolledBack { installed, previous },
+                    ));
+                    self.show_notice(&label);
+                    self.refresh_speech_vocabulary();
+                }
+                crate::update::ActionResult::Failed { action, reason } => {
+                    tracing::warn!(%action, %reason, "update action failed");
+                    let _rejection = self.dispatch(DispatchInput::UpdateFinished(
+                        tehuti_core::update::Outcome::Failed(reason.clone()),
+                    ));
+                    self.show_notice(&format!("{action} FAILED: {reason}"));
+                }
+            }
+        }
     }
 
     /// Reads `/proc` for processes of this user, other than Tehuti, holding the display device.
@@ -776,6 +908,12 @@ impl Compositor {
             );
         }
         let mut ordered = hotwords;
+        if self.dispatch.update().available().is_some() {
+            ordered.push(tehuti_core::update::UPDATE_PHRASE.into());
+        }
+        if self.dispatch.update().previous().is_some() {
+            ordered.push(tehuti_core::update::PREVIOUS_VERSION_PHRASE.into());
+        }
         ordered.append(&mut words);
         ordered.extend(
             crate::speech_vocabulary::load(&contexts)
@@ -835,6 +973,7 @@ impl Compositor {
     fn overlay_notice(&self, layer: tehuti_core::overlay::Overlay) -> Option<String> {
         use tehuti_core::overlay::Overlay;
         match layer {
+            Overlay::UpdateConfirmation => self.dispatch.update_confirmation_text(),
             Overlay::SystemMenu => self
                 .dispatch
                 .core()
@@ -2346,7 +2485,10 @@ impl Compositor {
             | DispatchEffect::FocusGapExpired
             | DispatchEffect::SpeechFailed { .. }
             | DispatchEffect::TranscriptReceived { .. }
-            | DispatchEffect::SpeechRouted { .. }) => {
+            | DispatchEffect::SpeechRouted { .. }
+            | DispatchEffect::ApplyUpdate
+            | DispatchEffect::ApplyRollback
+            | DispatchEffect::UpdateNotice(_)) => {
                 self.carry_out(effect);
                 None
             }
@@ -2695,7 +2837,11 @@ impl Compositor {
                 self.poll_remote_hosts();
                 self.poll_menu_failures();
                 self.poll_volume();
+                self.poll_update();
             }
+            DispatchEffect::ApplyUpdate => self.apply_update(),
+            DispatchEffect::ApplyRollback => self.apply_rollback(),
+            DispatchEffect::UpdateNotice(text) => self.show_notice(&text),
             DispatchEffect::ConfirmPressed(pressed) => self.confirmation.confirm_pressed(pressed),
             DispatchEffect::ResetSecretFocus => {
                 self.reset_secret_confirmation_for_focus();
@@ -3564,7 +3710,16 @@ impl Compositor {
                 Some((title, focused))
             })
             .collect();
-        let mut bar = self.dispatch.core().bar().clone().with_windows(windows);
+        let mut bar = self
+            .dispatch
+            .core()
+            .bar()
+            .clone()
+            .with_windows(windows)
+            .with_update(
+                self.dispatch.update().available().is_some(),
+                self.dispatch.update().chip_focused(),
+            );
         if let Some(identity) = self.placement.focused_destination()
             && let Some(name) = self
                 .launcher

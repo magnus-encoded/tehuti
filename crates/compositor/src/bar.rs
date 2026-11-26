@@ -29,6 +29,7 @@ type Key = (
     i32,
     Option<(std::sync::Arc<[ticker::Entry]>, usize)>,
     tehuti_core::bar::Font,
+    Option<usize>,
 );
 
 #[derive(Debug, Default)]
@@ -89,7 +90,14 @@ impl Buffer {
         let segments = bar.segments();
         let unit = usize::try_from(scale).ok()?;
         let width = usize::try_from(mode.size.w).ok()?;
-        let layout = Layout::new(&segments, width, unit, bar.level(), bar.focused_window_segment());
+        let focused_update = bar.update_focused().then(|| bar.update_segment()).flatten();
+        let layout = Layout::new(
+            &segments,
+            width,
+            unit,
+            bar.level(),
+            focused_update.or_else(|| bar.focused_window_segment()),
+        );
         let viewport = layout.ticker.1.saturating_sub(layout.ticker.0);
         let ticker = bar
             .ticker()
@@ -115,6 +123,7 @@ impl Buffer {
             height,
             ticker,
             self.font,
+            focused_update,
         );
         if self.key.as_ref() != Some(&key) {
             self.image = raster(
@@ -280,7 +289,7 @@ fn raster(
     height: i32,
     strip: Option<&crate::ticker_strip::Strip>,
 ) -> Option<MemoryRenderBuffer> {
-    let (segments, _, clock, width, scale, _, ticker, font) = key;
+    let (segments, _, clock, width, scale, _, ticker, font, focused_update) = key;
     let height_usize = usize::try_from(height).ok()?;
     let mut canvas = Canvas {
         font: *font,
@@ -306,14 +315,16 @@ fn raster(
         let Some(segment) = segments.get(*index) else {
             continue;
         };
+        let is_focused_update = *focused_update == Some(*index);
         if key.1 == tehuti_core::Level::Columns {
             let limit = layout.scroll.saturating_add(layout.clock_start);
             let end = (*end).min(limit);
-            canvas.rectangle(
-                start.saturating_sub(layout.scroll).min(layout.clock_start),
-                end.saturating_sub(layout.scroll),
-                colour(segment.tone),
-            );
+            let draw_start = start.saturating_sub(layout.scroll).min(layout.clock_start);
+            let draw_end = end.saturating_sub(layout.scroll);
+            canvas.rectangle(draw_start, draw_end, colour(segment.tone));
+            if is_focused_update {
+                canvas.focus_border(draw_start, draw_end, unit);
+            }
             canvas.scrolled_text(
                 &segment.text,
                 (
@@ -325,6 +336,9 @@ fn raster(
             );
         } else {
             canvas.chip(*start, *end, segment, layout.arrow, layout.clock_start, unit);
+            if is_focused_update {
+                canvas.focus_border(*start, *end, unit);
+            }
         }
     }
     Some(MemoryRenderBuffer::from_slice(
@@ -383,6 +397,22 @@ impl Canvas {
         for row in 0..self.height {
             for column in start..end {
                 self.pixel(column, row, colour);
+            }
+        }
+    }
+
+    /// Highlights a D-pad-focused bar chip with a cyan border matching Settings focus.
+    fn focus_border(&mut self, start: usize, end: usize, unit: usize) {
+        const FOCUS_CYAN: [u8; 4] = [240, 218, 64, 255];
+        let thickness = 2usize.saturating_mul(unit).min(self.height / 2).max(1);
+        for row in 0..thickness {
+            for column in start..end {
+                self.pixel(column, row, FOCUS_CYAN);
+                self.pixel(
+                    column,
+                    self.height.saturating_sub(1).saturating_sub(row),
+                    FOCUS_CYAN,
+                );
             }
         }
     }

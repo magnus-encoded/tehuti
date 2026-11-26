@@ -37,6 +37,8 @@ struct View {
     wallpaper_current: usize,
     bar_font: tehuti_core::bar::Font,
     scale: core::num::NonZeroU32,
+    previous_version: Option<String>,
+    pending_rollback: bool,
     remaining: Option<Duration>,
     failed: bool,
 }
@@ -59,6 +61,8 @@ impl View {
             wallpaper_current: settings.wallpaper_current,
             bar_font: settings.bar_font,
             scale: settings.scale,
+            previous_version: settings.previous_version.clone(),
+            pending_rollback: settings.pending_rollback,
             remaining: settings.remaining.map(|remaining| {
                 Duration::from_millis(
                     u64::try_from(remaining.as_millis() / 100)
@@ -145,7 +149,7 @@ use canvas::Canvas;
 impl Canvas {
     fn contents(&mut self, settings: &Settings, speech: &str) {
         match settings.page {
-            Page::Categories => self.categories(settings.category),
+            Page::Categories => self.categories(settings),
             Page::Display => self.display(settings),
             Page::Input => self.input(settings, speech),
             Page::Wallpaper => self.wallpaper(settings),
@@ -157,19 +161,48 @@ impl Canvas {
         self.rectangle(72, y, 4, height, CYAN);
     }
 
-    fn categories(&mut self, selected: Category) {
-        for (row, category) in Category::ALL.into_iter().enumerate() {
+    fn categories(&mut self, settings: &Settings) {
+        let selected = settings.category;
+        for (row, category) in Category::visible(settings.previous_version.is_some())
+            .iter()
+            .copied()
+            .enumerate()
+        {
             let y = 236usize.saturating_add(row.saturating_mul(96));
+            let confirming = category == Category::PreviousVersion && settings.pending_rollback;
             if category == selected {
                 self.highlight(y, 76);
+                if confirming {
+                    self.rectangle(72, y, 4, 76, AMBER);
+                }
             }
-            let (name, detail) = match category {
-                Category::Display => ("DISPLAY", "RESOLUTION / REFRESH / SCALE / BAR FONT"),
-                Category::Input => ("INPUT", "CONTROLLER / MICROPHONE"),
-                Category::Wallpaper => ("WALLPAPER", "RELEASE COLLECTION"),
+            let (name, detail, detail_colour) = match category {
+                Category::Display => (
+                    "DISPLAY",
+                    "RESOLUTION / REFRESH / SCALE / BAR FONT".to_owned(),
+                    CYAN,
+                ),
+                Category::Input => ("INPUT", "CONTROLLER / MICROPHONE".to_owned(), CYAN),
+                Category::Wallpaper => ("WALLPAPER", "RELEASE COLLECTION".to_owned(), CYAN),
+                Category::PreviousVersion => {
+                    let version = settings
+                        .previous_version
+                        .as_deref()
+                        .unwrap_or("UNKNOWN")
+                        .to_uppercase();
+                    if confirming {
+                        (
+                            "PREVIOUS VERSION",
+                            format!("CONFIRM ROLL BACK TO {version}?"),
+                            AMBER,
+                        )
+                    } else {
+                        ("PREVIOUS VERSION", format!("ROLL BACK TO {version}"), CYAN)
+                    }
+                }
             };
             self.text(96, y.saturating_add(20), name, 5, WHITE);
-            self.text(600, y.saturating_add(32), detail, 3, CYAN);
+            self.text(600, y.saturating_add(32), &detail, 3, detail_colour);
         }
     }
 

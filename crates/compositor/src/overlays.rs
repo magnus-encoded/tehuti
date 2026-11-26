@@ -111,6 +111,7 @@ impl Overlays {
                 .keyboard
                 .element(renderer, output, compositor.on_screen_keyboard()),
             Overlay::Notice
+            | Overlay::UpdateConfirmation
             | Overlay::MouseNotice
             | Overlay::SystemMenu
             | Overlay::Secret

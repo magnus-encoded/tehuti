@@ -38,10 +38,21 @@ pub enum Category {
     Display,
     Input,
     Wallpaper,
+    PreviousVersion,
 }
 
 impl Category {
     pub const ALL: [Self; 3] = [Self::Display, Self::Input, Self::Wallpaper];
+
+    /// Categories shown on the top page; Previous version appears only when a fallback build exists.
+    #[must_use]
+    pub const fn visible(has_previous_version: bool) -> &'static [Self] {
+        if has_previous_version {
+            &[Self::Display, Self::Input, Self::Wallpaper, Self::PreviousVersion]
+        } else {
+            &Self::ALL
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -64,6 +75,10 @@ pub struct Settings {
     pub wallpaper_current: usize,
     pub bar_font: crate::bar::Font,
     pub scale: core::num::NonZeroU32,
+    /// Fallback release tag (`tehuti.prev`) offered in the Previous version row, when installed.
+    pub previous_version: Option<String>,
+    /// True after a first Confirm press on Previous version, waiting for a second Confirm press.
+    pub pending_rollback: bool,
     pub remaining: Option<Duration>,
     previous: Option<usize>,
     status: Status,
@@ -81,6 +96,12 @@ impl Settings {
             format!("{confirm}: KEEP THIS MODE")
         } else {
             match self.page {
+                Page::Categories if self.pending_rollback => {
+                    format!("{confirm}: CONFIRM PREVIOUS VERSION   {back}: CANCEL")
+                }
+                Page::Categories if self.category == Category::PreviousVersion => {
+                    format!("D-PAD: MOVE   {confirm}: ROLL BACK   {back}: CLOSE")
+                }
                 Page::Categories => format!("D-PAD: MOVE   {confirm}: OPEN   {back}: CLOSE"),
                 Page::Input if self.input.pending_disable.is_some() => {
                     format!("{confirm}: DISABLE THE PAD IN USE   {back}: KEEP IT")
@@ -257,9 +278,20 @@ impl Settings {
         }
     }
 
+    pub(super) fn configure_previous_version(&mut self, previous: Option<String>) {
+        self.previous_version = previous;
+        if self.previous_version.is_none() {
+            self.pending_rollback = false;
+            if self.category == Category::PreviousVersion {
+                self.category = Category::Wallpaper;
+            }
+        }
+    }
+
     pub(super) fn close(&mut self, effects: &mut Vec<Effect>) {
         self.end_preview(effects);
         self.open = false;
+        self.pending_rollback = false;
         if self.page == Page::Wallpaper && self.wallpaper_selected != self.wallpaper_current {
             self.wallpaper_selected = self.wallpaper_current;
             effects.push(Effect::WallpaperPreview(self.wallpaper_current));
@@ -356,19 +388,29 @@ impl Settings {
     }
 
     fn categories_button(&mut self, name: ButtonName, effects: &mut Vec<Effect>) {
+        let categories = Category::visible(self.previous_version.is_some());
         match name {
-            name if name == self.pad_family.button(Role::Back) => self.close(effects),
+            name if name == self.pad_family.button(Role::Back) => {
+                if self.pending_rollback {
+                    self.pending_rollback = false;
+                } else {
+                    self.close(effects);
+                }
+            }
             ButtonName::DpadUp | ButtonName::DpadLeft => {
-                self.category = Category::ALL
-                    .get(self.category_index().saturating_sub(1))
+                self.pending_rollback = false;
+                self.category = categories
+                    .get(self.category_index(categories).saturating_sub(1))
                     .copied()
                     .unwrap_or(Category::Display);
             }
             ButtonName::DpadDown | ButtonName::DpadRight => {
-                self.category = Category::ALL
-                    .get(self.category_index().saturating_add(1))
+                self.pending_rollback = false;
+                let last = categories.last().copied().unwrap_or(Category::Wallpaper);
+                self.category = categories
+                    .get(self.category_index(categories).saturating_add(1))
                     .copied()
-                    .unwrap_or(Category::Wallpaper);
+                    .unwrap_or(last);
             }
             name if name == self.pad_family.button(Role::Confirm) => match self.category {
                 Category::Display => {
@@ -386,6 +428,17 @@ impl Settings {
                 Category::Wallpaper => {
                     self.page = Page::Wallpaper;
                     self.wallpaper_selected = self.wallpaper_current;
+                }
+                Category::PreviousVersion => {
+                    if self.previous_version.is_some() {
+                        if self.pending_rollback {
+                            self.pending_rollback = false;
+                            self.close(effects);
+                            effects.push(Effect::ApplyRollback);
+                        } else {
+                            self.pending_rollback = true;
+                        }
+                    }
                 }
             },
             ButtonName::South
@@ -409,8 +462,8 @@ impl Settings {
         }
     }
 
-    fn category_index(&self) -> usize {
-        Category::ALL
+    fn category_index(&self, categories: &[Category]) -> usize {
+        categories
             .iter()
             .position(|category| *category == self.category)
             .unwrap_or(0)
@@ -839,6 +892,8 @@ impl Default for Settings {
             wallpaper_current: 0,
             bar_font: crate::bar::Font::default(),
             scale: core::num::NonZeroU32::MIN,
+            previous_version: None,
+            pending_rollback: false,
             remaining: None,
             previous: None,
             status: Status::Ready,

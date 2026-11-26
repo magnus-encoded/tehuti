@@ -385,6 +385,9 @@ for line in sys.stdin:
             | Effect::SpeechFailed { .. }
             | Effect::TranscriptReceived { .. }
             | Effect::SpeechRouted { .. }
+            | Effect::ApplyUpdate
+            | Effect::ApplyRollback
+            | Effect::UpdateNotice(_)
             | Effect::PasswordSpeechIgnored => {}
         }
         None
