@@ -9,7 +9,9 @@ mod tests {
         state::Compositor,
     };
     use tehuti_core::{
-        adjuster::{BRIGHTNESS_MAX, BRIGHTNESS_MIN, BRIGHTNESS_STEP, STEP_REPEAT_DELAY, STEP_REPEAT_INTERVAL},
+        adjuster::{
+            BRIGHTNESS_MAX, BRIGHTNESS_MIN, BRIGHTNESS_STEP, STEP_REPEAT_DELAY, STEP_REPEAT_INTERVAL,
+        },
         bar::Tone,
     };
     use tehuti_protocol::{ButtonName, ButtonState, Event, Text};

@@ -77,21 +77,23 @@ impl Backend {
     ) -> io::Result<Self> {
         let (requests, input) = mpsc::channel();
         let (output, replies) = mpsc::channel();
-        let _worker = std::thread::Builder::new().name("brightness".into()).spawn(move || {
-            let mut ddc_max: Option<u64> = None;
-            while let Ok(request) = input.recv() {
-                let reply = handle_request(
-                    request,
-                    &sysfs_root,
-                    &mut ddc_max,
-                    &mut ddc,
-                    &mut permission_fallback,
-                );
-                if output.send(reply).is_err() {
-                    break;
+        let _worker = std::thread::Builder::new()
+            .name("brightness".into())
+            .spawn(move || {
+                let mut ddc_max: Option<u64> = None;
+                while let Ok(request) = input.recv() {
+                    let reply = handle_request(
+                        request,
+                        &sysfs_root,
+                        &mut ddc_max,
+                        &mut ddc,
+                        &mut permission_fallback,
+                    );
+                    if output.send(reply).is_err() {
+                        break;
+                    }
                 }
-            }
-        })?;
+            })?;
         Ok(Self { requests, replies })
     }
 
@@ -343,7 +345,12 @@ fn run_ddc(args: &[String]) -> Result<String, Error> {
 }
 
 fn run_brightnessctl(device: &str, percent: u8) -> Result<(), Error> {
-    let args = ["--device".into(), device.into(), "set".into(), format!("{percent}%")];
+    let args = [
+        "--device".into(),
+        device.into(),
+        "set".into(),
+        format!("{percent}%"),
+    ];
     let output = run_command("brightnessctl", &args, BRIGHTNESSCTL_TIMEOUT).map_err(|error| match error {
         Error::NoDevice => Error::Failed("permission denied writing backlight".into()),
         Error::Failed(reason) => Error::Failed(reason),

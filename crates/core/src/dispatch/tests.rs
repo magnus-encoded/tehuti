@@ -5724,7 +5724,10 @@ fn brightness_pad_nudges_by_fixed_step_and_confirms_with_south() {
     let state = world.run(state, Input::Brightness(Some(40)));
     assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(40));
     assert_eq!(
-        state.adjuster().map(crate::adjuster::Gauge::unit_label).as_deref(),
+        state
+            .adjuster()
+            .map(crate::adjuster::Gauge::unit_label)
+            .as_deref(),
         Some("brightness 40")
     );
     let state = tap_button(&mut world, state, ButtonName::DpadUp);
@@ -5741,7 +5744,10 @@ fn brightness_pad_nudges_by_fixed_step_and_confirms_with_south() {
     assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(40));
     let state = world.run(state, speech_event("brightness maximum"));
     assert_eq!(
-        state.adjuster().map(crate::adjuster::Gauge::unit_label).as_deref(),
+        state
+            .adjuster()
+            .map(crate::adjuster::Gauge::unit_label)
+            .as_deref(),
         Some("brightness maximum")
     );
     let state = tap_button(&mut world, state, ButtonName::South);
@@ -5775,7 +5781,10 @@ fn holding_dpad_repeats_brightness_steps_and_release_stops_it() {
     let state = world.run(state, Input::Brightness(Some(40)));
     let state = world.run(state, pad_button(ButtonName::DpadUp, ButtonState::Pressed));
     let after_one = i32::from(40_u8.saturating_add(BRIGHTNESS_STEP));
-    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(after_one));
+    assert_eq!(
+        state.adjuster().map(crate::adjuster::Gauge::value),
+        Some(after_one)
+    );
     let state = world.event(
         state,
         Event::Tick {
@@ -5858,7 +5867,10 @@ fn brightness_clamps_steps_at_bounds_and_east_reverts() {
         Some(i32::from(BRIGHTNESS_MIN))
     );
     assert_eq!(
-        state.adjuster().map(crate::adjuster::Gauge::unit_label).as_deref(),
+        state
+            .adjuster()
+            .map(crate::adjuster::Gauge::unit_label)
+            .as_deref(),
         Some("brightness minimum")
     );
     let state = tap_button(&mut low_world, state, ButtonName::East);
