@@ -733,7 +733,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     }
     if let Some(action) = global_layer(&state, event) {
         let actions = if focused_maps(&state, event) {
-            hold_key(&mut state, event).unwrap_or_else(|| active_context(&state, event).into_iter().collect())
+            hold_key(&mut state, event).unwrap_or_else(|| active_context(&state, event).unwrap_or_default())
         } else {
             vec![action]
         };

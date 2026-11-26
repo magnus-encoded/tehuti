@@ -64,9 +64,7 @@ pub fn step(mut state: State, input: Input) -> (State, Vec<Action>, Option<Rejec
             permissions,
         } => {
             let fallback: Vec<Action> = crate::active_context(&state, &event)
-                .or_else(|| crate::fallback(&event))
-                .into_iter()
-                .collect();
+                .unwrap_or_else(|| crate::fallback(&event).into_iter().collect());
             if state.pending.iter().any(|pending| pending.key == key) {
                 return (state, Vec::new(), None);
             }
