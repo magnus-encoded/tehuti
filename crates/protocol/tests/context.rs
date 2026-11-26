@@ -1122,25 +1122,37 @@ text = "a\u0000b"
         assert!(bad_hold.is_err(), "hold is not valid inside a sequence step");
     }
 
-    #[test]
-    fn tmux_context_maps_pad_steps_voice_destinations_and_terminal_clipboard() {
-        use tehuti_protocol::{Action, ButtonName, Modifier, SequenceStep, Text};
-        let prefix = SequenceStep::Key {
-            key: KeyName::B,
-            mods: vec![Modifier::Ctrl],
-        };
-        let key_step = |key| Action::Sequence {
-            steps: vec![prefix.clone(), SequenceStep::Key { key, mods: vec![] }],
-        };
-        let text_step = |text: &str| Action::Sequence {
+    fn tmux_key_chord(key: KeyName) -> tehuti_protocol::Action {
+        use tehuti_protocol::{Action, Modifier, SequenceStep};
+        Action::Sequence {
             steps: vec![
-                prefix.clone(),
+                SequenceStep::Key {
+                    key: KeyName::B,
+                    mods: vec![Modifier::Ctrl],
+                },
+                SequenceStep::Key { key, mods: vec![] },
+            ],
+        }
+    }
+
+    fn tmux_text_chord(text: &str) -> tehuti_protocol::Action {
+        use tehuti_protocol::{Action, Modifier, SequenceStep, Text};
+        Action::Sequence {
+            steps: vec![
+                SequenceStep::Key {
+                    key: KeyName::B,
+                    mods: vec![Modifier::Ctrl],
+                },
                 SequenceStep::Text {
                     text: Text::new(text.into()).unwrap(),
                 },
             ],
-        };
+        }
+    }
 
+    #[test]
+    fn tmux_context_maps_pad_steps() {
+        use tehuti_protocol::ButtonName;
         let context = parse_context(include_str!("../../../examples/tmux/context.toml")).unwrap();
         assert_eq!(context.app_id(), "tmux");
         assert_eq!(context.keyboard().terminal, Some(true));
@@ -1156,26 +1168,32 @@ text = "a\u0000b"
             "North stays free for the terminal on-screen keyboard"
         );
         for (button, expected) in [
-            (ButtonName::LeftBumper, key_step(KeyName::P)),
-            (ButtonName::RightBumper, key_step(KeyName::N)),
-            (ButtonName::DpadUp, key_step(KeyName::Up)),
-            (ButtonName::DpadDown, key_step(KeyName::Down)),
-            (ButtonName::DpadLeft, key_step(KeyName::Left)),
-            (ButtonName::DpadRight, key_step(KeyName::Right)),
-            (ButtonName::West, key_step(KeyName::Space)),
+            (ButtonName::LeftBumper, tmux_key_chord(KeyName::P)),
+            (ButtonName::RightBumper, tmux_key_chord(KeyName::N)),
+            (ButtonName::DpadUp, tmux_key_chord(KeyName::Up)),
+            (ButtonName::DpadDown, tmux_key_chord(KeyName::Down)),
+            (ButtonName::DpadLeft, tmux_key_chord(KeyName::Left)),
+            (ButtonName::DpadRight, tmux_key_chord(KeyName::Right)),
+            (ButtonName::West, tmux_key_chord(KeyName::Space)),
         ] {
             assert_eq!(context.action_for(button), Some(expected), "{button:?}");
         }
+    }
+
+    #[test]
+    fn tmux_context_maps_voice_destinations_and_terminal_clipboard() {
+        use tehuti_protocol::{Action, Modifier};
+        let context = parse_context(include_str!("../../../examples/tmux/context.toml")).unwrap();
         for (phrase, expected) in [
-            ("Split right", text_step("%")),
-            ("Split below", text_step("\"")),
-            ("Window three", key_step(KeyName::Digit3)),
-            ("window 3", key_step(KeyName::Digit3)),
-            ("Zoom pane", key_step(KeyName::Z)),
-            ("Detach", key_step(KeyName::D)),
-            ("New window", key_step(KeyName::C)),
-            ("Copy mode", text_step("[")),
-            ("Paste buffer", text_step("]")),
+            ("Split right", tmux_text_chord("%")),
+            ("Split below", tmux_text_chord("\"")),
+            ("Window three", tmux_key_chord(KeyName::Digit3)),
+            ("window 3", tmux_key_chord(KeyName::Digit3)),
+            ("Zoom pane", tmux_key_chord(KeyName::Z)),
+            ("Detach", tmux_key_chord(KeyName::D)),
+            ("New window", tmux_key_chord(KeyName::C)),
+            ("Copy mode", tmux_text_chord("[")),
+            ("Paste buffer", tmux_text_chord("]")),
             (
                 "Copy",
                 Action::Key {
