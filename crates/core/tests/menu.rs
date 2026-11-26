@@ -85,7 +85,7 @@ mod menu {
         let mut menu = Some(Menu::default());
         assert_eq!(
             menu.as_ref().unwrap().text(),
-            "SYSTEM MENU\n> LOG OUT\n  RESTART TEHUTI\n  SWITCH TO PLASMA\n  REBOOT\n  SHUT DOWN\n  TASK MONITOR\n  SETTINGS\n  CLOSE DISPLAY HOLDER\n  SCREENSHOT\n  START RECORDING\nB OR GUIDE CLOSE"
+            "SYSTEM MENU\n> LOG OUT\n  RESTART TEHUTI\n  SWITCH TO PLASMA\n  REBOOT\n  SHUT DOWN\n  TASK MONITOR\n  WHAT CAN I SAY\n  SETTINGS\n  CLOSE DISPLAY HOLDER\n  SCREENSHOT\n  START RECORDING\nB OR GUIDE CLOSE"
         );
         assert_eq!(button(&mut menu, ButtonName::DpadUp, ButtonState::Pressed), None);
         assert!(menu.as_ref().unwrap().text().contains("\n> START RECORDING"));
@@ -105,6 +105,7 @@ mod menu {
             (Command::Reboot, "reboot"),
             (Command::ShutDown, "shut_down"),
             (Command::TaskMonitor, "task_monitor"),
+            (Command::WhatCanISay, "what_can_i_say"),
             (Command::Settings, "settings"),
             (Command::Screenshot, "screenshot"),
         ] {

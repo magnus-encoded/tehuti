@@ -20,7 +20,7 @@ pub use input_settings::{
 };
 
 mod settings;
-pub use settings::{Category, Page, Settings};
+pub use settings::{Category, OPEN_PHRASE as OPEN_SETTINGS_PHRASE, Page, Settings};
 
 mod adjustment;
 use adjustment::{adjuster_effect, adjuster_input, adjuster_phrase, adjuster_sticks, remember_adjuster};
@@ -327,6 +327,8 @@ pub struct State {
     launcher: Option<crate::launcher::Launcher>,
     choice_list: Option<crate::choice_list::List>,
     choice_buttons: Vec<ButtonName>,
+    help_overlay: Option<crate::help_overlay::HelpOverlay>,
+    help_buttons: Vec<ButtonName>,
     overlay_stack: Vec<Overlay>,
     secret_prompt: SecretPrompt,
     adjuster: Option<crate::adjuster::Gauge>,
@@ -361,6 +363,8 @@ impl State {
             launcher: None,
             choice_list: None,
             choice_buttons: Vec::new(),
+            help_overlay: None,
+            help_buttons: Vec::new(),
             overlay_stack: Vec::new(),
             secret_prompt: SecretPrompt::Hidden,
             adjuster: None,
@@ -374,9 +378,20 @@ impl State {
 
     #[must_use]
     pub fn overlay_owns_pad(&self) -> bool {
-        self.adjuster.is_some()
+        let tool_open = self.keyboard.is_open() || self.mouse.active();
+        self.help_overlay.is_some()
+            || self.adjuster.is_some()
             || self.volume_pending == crate::adjuster::VolumeRead::Pending
-            || (self.tool_pad == ToolPad::Held && (self.keyboard.is_open() || self.mouse.active()))
+            || (self.tool_pad == ToolPad::Held && tool_open)
+    }
+
+    #[must_use]
+    pub const fn help_overlay(&self) -> Option<&crate::help_overlay::HelpOverlay> {
+        self.help_overlay.as_ref()
+    }
+
+    const fn help_overlay_open(&self) -> bool {
+        self.help_overlay.is_some()
     }
 
     #[must_use]
@@ -663,6 +678,7 @@ fn routed_step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             gauge.revert();
             released.push(adjuster_effect(&gauge, true));
         }
+        state.help_overlay = None;
     }
     let (mut state, mut routed) = step_input(state, input);
     let mut effects = released;
@@ -990,11 +1006,17 @@ fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
     release_pad(state, Handoff::Disconnect, effects);
     state.opening_button = None;
     state.choice_buttons.clear();
+    state.help_buttons.clear();
+    state.help_overlay = None;
     state.core.controller_disconnected();
 }
 
 fn update_sticks(state: &mut State, sticks: Sticks) {
-    if !state.choice_list_open() && !state.core.passthrough() && state.core.menu().is_none() {
+    if !state.choice_list_open()
+        && !state.help_overlay_open()
+        && !state.core.passthrough()
+        && state.core.menu().is_none()
+    {
         state.keyboard.left_stick(sticks.left.0, sticks.left.1);
         state.mouse.sticks = sticks;
     }
@@ -1040,6 +1062,16 @@ fn release_pad(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>) {
 
 fn release_layer(state: &mut State, layer: Overlay, handoff: Handoff, effects: &mut Vec<Effect>) {
     match layer {
+        Overlay::HelpOverlay => {
+            if matches!(
+                handoff,
+                Handoff::Open(Overlay::Settings | Overlay::SystemMenu)
+                    | Handoff::Disconnect
+                    | Handoff::Passthrough
+            ) {
+                state.help_overlay = None;
+            }
+        }
         Overlay::Adjuster => {
             if state.volume_pending == crate::adjuster::VolumeRead::Pending {
                 state.volume_pending = crate::adjuster::VolumeRead::Cancelled;
@@ -1112,6 +1144,7 @@ fn open_overlays(state: &State) -> Vec<Overlay> {
     STACK
         .into_iter()
         .filter(|layer| match layer {
+            Overlay::HelpOverlay => state.help_overlay.is_some(),
             Overlay::Adjuster => {
                 state.adjuster.is_some() || state.volume_pending == crate::adjuster::VolumeRead::Pending
             }
@@ -1548,6 +1581,7 @@ fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if let Event::Tick { elapsed } = event
         && state.core.menu().is_none()
         && !state.settings.open
+        && state.help_overlay.is_none()
         && state.choice_list.as_ref().is_none_or(|list| !list.is_open())
     {
         if state.keyboard.tick(elapsed) {
@@ -1624,6 +1658,8 @@ fn system_menu(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
             if command == crate::menu::Command::Settings {
                 state.settings.open = true;
                 state.settings.page = Page::Categories;
+            } else if command == crate::menu::Command::WhatCanISay {
+                open_help_overlay(state);
             } else {
                 effects.push(Effect::RunMenuCommand(command));
             }
@@ -1659,6 +1695,7 @@ fn guide_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
         }
     ) {
         state.settings.close(effects);
+        state.help_overlay = None;
     }
     let _response = state.keyboard.button(ButtonName::Guide, start_state(event), true);
     if let Some(actions) = crate::escape_chord(&mut state.core, event) {
@@ -1671,15 +1708,19 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
         name,
         state: ButtonState::Released,
     } = event
-        && (state.choice_buttons.contains(name) || state.adjuster_buttons.contains(name))
+        && (state.choice_buttons.contains(name)
+            || state.adjuster_buttons.contains(name)
+            || state.help_buttons.contains(name))
     {
         state.adjuster_buttons.retain(|held| held != name);
         state.choice_buttons.retain(|held| held != name);
+        state.help_buttons.retain(|held| held != name);
         return true;
     }
     sync_keyboard_config(state);
     let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
     if adjuster_phrase(state, event, dictation, effects)
+        || help_overlay_phrase(state, event, dictation)
         || settings_phrase(state, event, dictation, effects)
         || crate::menu_button_release(&mut state.core, event)
         || reserved_safety(state, event, dictation, effects)
@@ -1689,6 +1730,35 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
     STACK
         .into_iter()
         .any(|layer| overlay_input(state, layer, event, dictation, effects))
+}
+
+fn open_help_overlay(state: &mut State) {
+    state.launcher = None;
+    state.choice_list = None;
+    let adjusters: Vec<String> = state
+        .adjusters
+        .iter()
+        .map(|(_, spec)| spec.name().to_owned())
+        .collect();
+    state.help_overlay = Some(state.core.help_overlay(&adjusters));
+}
+
+fn help_overlay_phrase(state: &mut State, event: &Event, dictation: bool) -> bool {
+    if dictation
+        || state.keyboard.password_field_active()
+        || state.settings.open
+        || state.core.menu().is_some()
+    {
+        return false;
+    }
+    let Event::Speech { text } = event else {
+        return false;
+    };
+    if crate::tool_words::tool_word(text.as_str()) != Some(crate::tool_words::ToolWord::WhatCanISay) {
+        return false;
+    }
+    open_help_overlay(state);
+    true
 }
 
 fn settings_phrase(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
@@ -1735,6 +1805,7 @@ fn overlay_input(
     effects: &mut Vec<Effect>,
 ) -> bool {
     match layer {
+        Overlay::HelpOverlay => help_overlay_input(state, event, effects),
         Overlay::ChoiceList => {
             if state
                 .launcher
@@ -1876,8 +1947,102 @@ fn secret_input(state: &mut State, event: &Event) -> bool {
     true
 }
 
+fn help_overlay_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if !state.help_overlay_open() {
+        return false;
+    }
+    match event {
+        Event::Speech { text } => {
+            if crate::tool_words::tool_word(text.as_str()) == Some(crate::tool_words::ToolWord::WhatCanISay) {
+                open_help_overlay(state);
+                return true;
+            }
+            // Any other spoken command closes the reference overlay and routes normally.
+            state.help_overlay = None;
+            false
+        }
+        Event::Button { name, state: button } => help_overlay_button(state, *name, *button, effects),
+        Event::Tick { .. } | Event::Focus { .. } => false,
+    }
+}
+
+fn help_overlay_button(
+    state: &mut State,
+    name: ButtonName,
+    button: ButtonState,
+    effects: &mut Vec<Effect>,
+) -> bool {
+    if state.core.push_to_talk(name) {
+        return false;
+    }
+    if button != ButtonState::Pressed || state.help_buttons.contains(&name) {
+        return true;
+    }
+    state.help_buttons.push(name);
+    let family = state.core.pad_family();
+    if name == family.button(crate::pad::Role::Back) {
+        state.help_overlay = None;
+    } else if name == family.button(crate::pad::Role::Confirm) {
+        confirm_help_overlay(state, effects);
+    } else if let Some(overlay) = &mut state.help_overlay {
+        step_help_overlay(overlay, name);
+    }
+    true
+}
+
+fn confirm_help_overlay(state: &mut State, effects: &mut Vec<Effect>) {
+    let target = state.help_overlay.as_ref().map_or(
+        crate::help_overlay::Target::None,
+        crate::help_overlay::HelpOverlay::confirm_target,
+    );
+    match target {
+        crate::help_overlay::Target::Action(action) => {
+            state.help_overlay = None;
+            effects.push(Effect::Apply(action));
+        }
+        crate::help_overlay::Target::Speech(phrase) => {
+            state.help_overlay = None;
+            if let Ok(text) = tehuti_protocol::Text::new(phrase) {
+                effects.push(Effect::Handle(Event::Speech { text }));
+            }
+        }
+        crate::help_overlay::Target::None => {}
+    }
+}
+
+fn step_help_overlay(overlay: &mut crate::help_overlay::HelpOverlay, name: ButtonName) {
+    match name {
+        ButtonName::DpadUp => overlay.step_entry(false),
+        ButtonName::DpadDown => overlay.step_entry(true),
+        ButtonName::DpadLeft => overlay.step_group(false),
+        ButtonName::DpadRight => overlay.step_group(true),
+        ButtonName::South
+        | ButtonName::East
+        | ButtonName::North
+        | ButtonName::West
+        | ButtonName::LeftBumper
+        | ButtonName::RightBumper
+        | ButtonName::LeftTrigger
+        | ButtonName::RightTrigger
+        | ButtonName::Select
+        | ButtonName::Record
+        | ButtonName::Start
+        | ButtonName::Guide
+        | ButtonName::LeftStick
+        | ButtonName::RightStick
+        | ButtonName::Paddle1
+        | ButtonName::Paddle2
+        | ButtonName::Paddle3
+        | ButtonName::Paddle4 => {}
+    }
+}
+
 fn lower_view_owns_pad(state: &State) -> bool {
-    state.choice_list_open() || state.settings.open || state.keyboard.is_open() || state.mouse.active()
+    state.help_overlay_open()
+        || state.choice_list_open()
+        || state.settings.open
+        || state.keyboard.is_open()
+        || state.mouse.active()
 }
 
 fn queue_secret_confirmation(state: &mut State, button: ButtonState, event: Event) {
@@ -2132,6 +2297,10 @@ fn tool_word_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) 
         }
         Some(ToolWord::MouseMode) => {
             state.mouse.toggle(effects);
+            true
+        }
+        Some(ToolWord::WhatCanISay) => {
+            open_help_overlay(state);
             true
         }
         None => false,

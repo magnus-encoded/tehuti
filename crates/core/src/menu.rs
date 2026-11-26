@@ -11,6 +11,7 @@ pub enum Command {
     Reboot,
     ShutDown,
     TaskMonitor,
+    WhatCanISay,
     Settings,
     CloseHolder,
     Screenshot,
@@ -39,6 +40,7 @@ impl Command {
             Self::Reboot => ("reboot", "REBOOT"),
             Self::ShutDown => ("shut_down", "SHUT DOWN"),
             Self::TaskMonitor => ("task_monitor", "TASK MONITOR"),
+            Self::WhatCanISay => ("what_can_i_say", "WHAT CAN I SAY"),
             Self::Settings => ("settings", "SETTINGS"),
             Self::CloseHolder => ("close_holder", "CLOSE DISPLAY HOLDER"),
             Self::Screenshot => ("screenshot", "SCREENSHOT"),
@@ -50,13 +52,14 @@ impl Command {
     }
 }
 
-pub const ITEMS: [Command; 10] = [
+pub const ITEMS: [Command; 11] = [
     Command::LogOut,
     Command::Restart,
     Command::Plasma,
     Command::Reboot,
     Command::ShutDown,
     Command::TaskMonitor,
+    Command::WhatCanISay,
     Command::Settings,
     Command::CloseHolder,
     Command::Screenshot,
@@ -162,6 +165,7 @@ impl Menu {
             || matches!(
                 command,
                 Command::TaskMonitor
+                    | Command::WhatCanISay
                     | Command::Settings
                     | Command::Screenshot
                     | Command::StartRecording

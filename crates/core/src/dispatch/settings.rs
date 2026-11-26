@@ -815,10 +815,13 @@ fn rate_of(mode: &str) -> &str {
     mode.split_once('@').map_or("", |(_, rate)| rate)
 }
 
+/// Spoken phrase that opens or closes the settings view.
+pub const OPEN_PHRASE: &str = "pop the hood";
+
 fn is_open_phrase(text: &str) -> bool {
     text.trim()
         .trim_end_matches('.')
-        .eq_ignore_ascii_case("pop the hood")
+        .eq_ignore_ascii_case(OPEN_PHRASE)
 }
 
 impl Default for Settings {

@@ -541,6 +541,30 @@ impl State {
         self.bar.set_ticker(entries);
     }
 
+    /// Builds the grouped "what can I say / press" overlay for the focused context and global layer.
+    #[must_use]
+    pub fn help_overlay(&self, extra_adjusters: &[String]) -> help_overlay::HelpOverlay {
+        let focused = focused_context(self);
+        let global = global_context(self);
+        let name = focused.map(|context| {
+            context
+                .label()
+                .or_else(|| self.label(Some(context.app_id())))
+                .unwrap_or_else(|| context.app_id())
+                .to_owned()
+        });
+        help_overlay::HelpOverlay::build(
+            focused,
+            name,
+            global,
+            self.pad_family,
+            self.level,
+            self.sticks.active_modifier(),
+            self.talk_buttons().0,
+            extra_adjusters,
+        )
+    }
+
     /// Whether the focused context's `[sticks]` maps `stick`, which then leaves mouse mode.
     #[must_use]
     pub fn maps_stick(&self, stick: tehuti_protocol::Stick) -> bool {
@@ -807,7 +831,7 @@ const NO_MAPPING_NOTICE: &str = "NO SPEECH MAPPING";
 /// mapping, built-in or fuzzy match takes the phrase.
 #[must_use]
 pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<String>> {
-    if phrase.trim().is_empty() {
+    if phrase.trim().is_empty() || tool_words::tool_word(phrase).is_some() {
         return None;
     }
     let focused = focused_context(state);
@@ -1002,6 +1026,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
                 tehuti_protocol::normalize_phrase(phrase).as_str(),
                 "start recording" | "stop recording"
             )
+            || tool_words::tool_word(phrase) == Some(tool_words::ToolWord::WhatCanISay)
         {
             return None;
         }
@@ -1321,6 +1346,7 @@ pub mod keyboard;
 pub mod menu;
 
 pub mod choice_list;
+pub mod help_overlay;
 
 mod spoken_keys;
 

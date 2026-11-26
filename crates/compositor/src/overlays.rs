@@ -21,6 +21,7 @@ use tehuti_core::overlay::{Overlay, STACK};
 pub struct Overlays {
     bar: crate::bar::Buffer,
     choices: crate::choice_list::Buffer,
+    help_overlay: crate::help_overlay::Buffer,
     adjuster: crate::adjuster::Buffer,
     keyboard: crate::osk::Buffer,
     cursor: Option<MemoryRenderBuffer>,
@@ -104,6 +105,7 @@ impl Overlays {
                 compositor.adjuster().filter(|gauge| !gauge.is_stepper()),
             ),
             Overlay::Cursor => self.cursor_element(renderer, output, compositor),
+            Overlay::HelpOverlay => self.help_overlay.element(renderer, compositor, output),
             Overlay::ChoiceList => self.choices.element(renderer, compositor, output),
             Overlay::Settings => crate::settings::element(renderer, compositor, output),
             Overlay::Bar => self.bar.element(renderer, output, &compositor.voice_bar(), clock),

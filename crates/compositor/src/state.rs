@@ -468,7 +468,7 @@ impl Compositor {
             .collect();
         json!({"version": 1, "clock_ms": self.driver_elapsed.as_millis(), "windows": windows, "focus": focused,
             "level": format!("{:?}", self.dispatch.core().level()), "launcher": launcher,
-            "overlays": {"keyboard": self.on_screen_keyboard().is_open(), "settings": self.settings().open, "menu": self.dispatch.core().menu().is_some()},
+            "overlays": {"keyboard": self.on_screen_keyboard().is_open(), "settings": self.settings().open, "menu": self.dispatch.core().menu().is_some(), "help_overlay": self.help_overlay().is_some()},
             "keyboard": self.on_screen_keyboard().is_open(), "notice": self.visible_notice_text(), "bar": bar,
             "menu_text": self.dispatch.core().menu().map(|menu| menu.clone().with_recording(self.recording_active()).text()),
             "notices": tehuti_core::overlay::STACK.into_iter().filter_map(|layer| self.overlay_notice(layer)).collect::<Vec<_>>(),
@@ -855,6 +855,7 @@ impl Compositor {
             Overlay::Adjuster
             | Overlay::Cursor
             | Overlay::Settings
+            | Overlay::HelpOverlay
             | Overlay::ChoiceList
             | Overlay::Bar
             | Overlay::Keyboard
@@ -1940,6 +1941,11 @@ impl Compositor {
     #[must_use]
     pub fn choice_list(&self) -> Option<&tehuti_core::choice_list::List> {
         self.dispatch.choice_list()
+    }
+
+    #[must_use]
+    pub const fn help_overlay(&self) -> Option<&tehuti_core::help_overlay::HelpOverlay> {
+        self.dispatch.help_overlay()
     }
 
     #[must_use]
