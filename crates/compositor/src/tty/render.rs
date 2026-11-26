@@ -281,32 +281,31 @@ where
     R::Error: 'static,
 {
     let age = tehuti::pacing::buffer_age(*pass.drawn, buffer.drawn_at, pass.full);
-    let clock = chrono::Local::now().format("%H:%M").to_string();
-    let overlay = overlays.elements(renderer, output, compositor, &clock)?;
     let mut target = renderer.bind(&mut buffer.dmabuf)?;
-    let outcome = tehuti::wallpaper::render_output_at_age(
-        output,
-        renderer,
-        &mut target,
-        compositor,
-        &overlay.elements,
-        damage,
-        age,
-    )
-    .and_then(|frame| {
-        let drew = frame.damage.is_some();
-        frame.sync.wait()?;
-        Ok(drew)
-    });
-    match outcome {
-        Ok(false) => return Ok(None),
-        Ok(true) => {}
+    let outcome = compositor
+        .frame(
+            renderer,
+            &mut target,
+            &mut tehuti::frame::Surface {
+                output,
+                overlays,
+                damage: &mut *damage,
+                age,
+            },
+        )
+        .and_then(|frame| {
+            frame.sync.wait()?;
+            Ok(frame)
+        });
+    let overlay = match outcome {
+        Ok(frame) if !frame.drew => return Ok(None),
+        Ok(frame) => frame,
         Err(error) => {
             // The tracker may have counted this frame, so its history and the buffers disagree.
             *damage = OutputDamageTracker::from_output(output);
             return Err(error);
         }
-    }
+    };
     buffer.drawn_at = Some(*pass.drawn);
     *pass.drawn = pass.drawn.saturating_add(1);
     Ok(Some(overlay.notice_included))

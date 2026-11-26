@@ -62,6 +62,7 @@ pub mod pictograms;
 pub mod ticker_strip;
 mod workspace_feedback;
 
+pub mod frame;
 pub mod osk;
 pub mod overlays;
 pub mod pacing;
