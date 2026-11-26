@@ -80,6 +80,15 @@ impl<Key: Copy + Eq> TapHold<Key> {
         };
         let mut events = Vec::new();
         let epoch = self.focus_epoch;
+        let stale_modifier = self
+            .held_taps
+            .iter()
+            .any(|held| held.epoch == epoch && held.modifier && !modifiers.contains(&held.code));
+        if stale_modifier {
+            events.extend(self.release(|held| {
+                held.epoch == epoch && (!held.modifier || !modifiers.contains(&held.code))
+            }));
+        }
         for code in modifiers {
             if let Some(held) = self.held_taps.iter_mut().find(|held| held.code == *code) {
                 held.due = due;
@@ -138,6 +147,12 @@ impl<Key: Copy + Eq> TapHold<Key> {
     /// Releases every held key now, keys before modifiers.
     pub fn release_all(&mut self) -> Vec<(Key, bool)> {
         self.release(|_| true)
+    }
+
+    /// Releases every key held in the current focus epoch, keys before modifiers.
+    pub fn release_current_epoch(&mut self) -> Vec<(Key, bool)> {
+        let epoch = self.focus_epoch;
+        self.release(|held| held.epoch == epoch)
     }
 
     /// Records focus while the caller cannot yet deliver key releases.

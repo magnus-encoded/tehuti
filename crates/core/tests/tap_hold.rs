@@ -128,4 +128,50 @@ mod tests {
         assert_eq!(taps.flush_focus(), Vec::<(i32, bool)>::new());
         assert_eq!(taps.tick(millis(70)), [(1, false)]);
     }
+
+    #[test]
+    fn a_later_unmodified_tap_releases_a_prior_chords_modifier() {
+        let mut taps = TapHold::default();
+        assert_eq!(
+            taps.tap(millis(0), 10, &[20]),
+            [(20, true), (10, true)],
+            "Ctrl+W presses modifier then key"
+        );
+        assert_eq!(
+            taps.tap(millis(0), 11, &[]),
+            [(10, false), (20, false), (11, true)],
+            "following H releases W and Ctrl before pressing H"
+        );
+        assert_eq!(
+            taps.tick(millis(40)),
+            [(11, false)],
+            "only H remains to expire"
+        );
+    }
+
+    #[test]
+    fn release_current_epoch_leaves_earlier_focus_holds_for_focus_flush() {
+        let mut taps = TapHold::default();
+        assert_eq!(
+            taps.tap(millis(0), 1, &[3]),
+            [(3, true), (1, true)],
+            "first focus holds a chord"
+        );
+        taps.focus_changed();
+        assert_eq!(
+            taps.tap(millis(5), 2, &[4]),
+            [(4, true), (2, true)],
+            "new focus holds its own chord"
+        );
+        assert_eq!(
+            taps.release_current_epoch(),
+            [(2, false), (4, false)],
+            "current epoch releases keys before modifiers"
+        );
+        assert_eq!(
+            taps.flush_focus(),
+            [(1, false), (3, false)],
+            "earlier focus holds still flush on demand"
+        );
+    }
 }

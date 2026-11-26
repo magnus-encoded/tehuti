@@ -131,6 +131,7 @@ fields are rejected.
 | --- | --- |
 | `{ key = "tab", mods = ["ctrl"], hold = true }` | Taps a key. `mods` lists `ctrl`, `alt`, `shift` or `super`. `hold` keeps the key down while the button is held (buttons only; no `mods`). |
 | `{ text = "Hello" }` | Types Unicode text. |
+| `{ sequence = [{ key = "escape" }, { text = ":w" }, { key = "enter" }] }` | Runs a non-empty list of key taps and text steps in order. Steps cannot set `hold` or nest another sequence. |
 | `{ launch = "org.example.App.desktop" }` | Launches an installed desktop entry. |
 | `{ close = "focused" }` | Closes the focused window. |
 | `{ restart = true }` | Restarts the compositor in its session. `false` is rejected. |
@@ -141,6 +142,8 @@ fields are rejected.
 | `{ secret = { entry = "mail" } }` | Asks for confirmation, then delivers the named secret entry. |
 
 A phrase may also carry `icon = "..."` beside its value (see the ticker).
+
+A speech phrase ending in `<name>`, `<project>` or `<number>` matches that prefix followed by a tail and substitutes `{name}`, `{project}` or `{number}` into a `text` action or any `text` step of a `sequence`. `<number>` accepts digits or English number words (such as `"40"` or `"forty"`). See `examples/neovim/context.toml`.
 
 ## Shared sections
 

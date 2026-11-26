@@ -203,7 +203,7 @@ fn step_stick(
     with: Option<ButtonName>,
     elapsed: Duration,
     deflected: &mut Deflected,
-) -> Option<Action> {
+) -> Vec<Action> {
     let threshold = if deflected.pointing.is_some() {
         RELEASE_DEFLECTION
     } else {
@@ -211,26 +211,26 @@ fn step_stick(
     };
     if depth < threshold {
         *deflected = Deflected::default();
-        return None;
+        return Vec::new();
     }
     let Some(mapping) = resolve(context, stick, sample, with) else {
         *deflected = Deflected::default();
-        return None;
+        return Vec::new();
     };
     if deflected.pointing != Some((mapping.direction, with)) {
         *deflected = Deflected {
             pointing: Some((mapping.direction, with)),
             until_repeat: REPEAT_DELAY,
         };
-        return Some(mapping.action.clone());
+        return mapping.actions.clone();
     }
     if !mapping.repeat {
-        return None;
+        return Vec::new();
     }
     deflected.until_repeat = deflected.until_repeat.saturating_sub(elapsed);
     if !deflected.until_repeat.is_zero() {
-        return None;
+        return Vec::new();
     }
     deflected.until_repeat = repeat_interval(depth);
-    Some(mapping.action.clone())
+    mapping.actions.clone()
 }

@@ -1,0 +1,75 @@
+# Neovim: pad steps and voice destinations for modal editing.
+# Start Neovim in a terminal with its own app id (for example: foot --app-id nvim nvim),
+# or change app_id to "neovide" for Neovide.
+#
+# Pad map (relative steps; every command returns to Normal mode first):
+#   South (A):     Confirm (Enter)
+#   East (B):      Normal mode (Escape)
+#   West (X):      Next search match (n)
+#   North (Y):     Terminal on-screen keyboard
+#   LT / RT:       Previous search match (N) / Undo (u)
+#   LB / RB:       Previous buffer (:bprevious) / Next buffer (:bnext)
+#   D-pad:         Move between splits (Ctrl+W h/j/k/l)
+#   Left stick:    Scroll half-page up/down (Ctrl+U / Ctrl+D)
+#   Right stick:   Scroll one line up/down (Ctrl+Y / Ctrl+E)
+#
+# Leader sequences assume Space as <leader> (find file: <Space>ff, find text: <Space>fg,
+# buffers: <Space>fb). All other commands use built-in Neovim Ex and Normal-mode bindings.
+
+app_id = "nvim"
+label = "Neovim"
+
+[keyboard]
+terminal = true
+
+[buttons]
+south = { key = "enter" }
+east = { key = "escape" }
+west = { sequence = [{ key = "escape" }, { key = "n" }] }
+left_trigger = { sequence = [{ key = "escape" }, { key = "n", mods = ["shift"] }] }
+right_trigger = { sequence = [{ key = "escape" }, { key = "u" }] }
+left_bumper = { sequence = [{ key = "escape" }, { text = ":bprevious" }, { key = "enter" }] }
+right_bumper = { sequence = [{ key = "escape" }, { text = ":bnext" }, { key = "enter" }] }
+dpad_left = { sequence = [{ key = "escape" }, { key = "w", mods = ["ctrl"] }, { key = "h" }] }
+dpad_down = { sequence = [{ key = "escape" }, { key = "w", mods = ["ctrl"] }, { key = "j" }] }
+dpad_up = { sequence = [{ key = "escape" }, { key = "w", mods = ["ctrl"] }, { key = "k" }] }
+dpad_right = { sequence = [{ key = "escape" }, { key = "w", mods = ["ctrl"] }, { key = "l" }] }
+
+[sticks]
+left.up = { sequence = [{ key = "escape" }, { key = "u", mods = ["ctrl"] }] }
+left.down = { sequence = [{ key = "escape" }, { key = "d", mods = ["ctrl"] }] }
+right.up = { sequence = [{ key = "escape" }, { key = "y", mods = ["ctrl"] }] }
+right.down = { sequence = [{ key = "escape" }, { key = "e", mods = ["ctrl"] }] }
+
+[speech]
+hotwords = ["Neovim", "buffer", "buffers", "split", "vsplit", "normal mode", "insert mode"]
+"Save" = { sequence = [{ key = "escape" }, { text = ":w" }, { key = "enter" }], icon = "💾" }
+"Save and quit" = { sequence = [{ key = "escape" }, { text = ":wq" }, { key = "enter" }], icon = "❌" }
+"Find file" = { sequence = [{ key = "escape" }, { key = "space" }, { key = "f" }, { key = "f" }], icon = "📂" }
+"Find text" = { sequence = [{ key = "escape" }, { key = "space" }, { key = "f" }, { key = "g" }] }
+"Buffers" = { sequence = [{ key = "escape" }, { key = "space" }, { key = "f" }, { key = "b" }] }
+"Go to line <number>" = { sequence = [{ key = "escape" }, { text = ":{number}" }, { key = "enter" }] }
+"Top of file" = { sequence = [{ key = "escape" }, { key = "g" }, { key = "g" }] }
+"End of file" = { sequence = [{ key = "escape" }, { key = "g", mods = ["shift"] }] }
+"Split right" = { sequence = [{ key = "escape" }, { text = ":vsplit" }, { key = "enter" }] }
+"Split below" = { sequence = [{ key = "escape" }, { text = ":split" }, { key = "enter" }] }
+"Close split" = { sequence = [{ key = "escape" }, { text = ":close" }, { key = "enter" }] }
+"Normal mode" = { key = "escape" }
+"Insert mode" = { sequence = [{ key = "escape" }, { key = "i" }] }
+
+[ticker]
+enabled = true
+speech = "own"
+
+[ticker.buttons]
+south = "Confirm"
+east = "Normal mode"
+west = "Next match"
+left_trigger = "Prev match"
+right_trigger = "Undo"
+left_bumper = "Prev buffer"
+right_bumper = "Next buffer"
+dpad_left = "Split left"
+dpad_down = "Split down"
+dpad_up = "Split up"
+dpad_right = "Split right"

@@ -1335,7 +1335,7 @@ fn finish_route(
         let fuzzy = state
             .core
             .fuzzy_speech_match(text.as_str())
-            .filter(|matched| first.as_ref() == Some(&matched.action));
+            .filter(|matched| actions == matched.actions);
         effects.push(Effect::SpeechRouted {
             text,
             first,

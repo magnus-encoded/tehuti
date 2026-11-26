@@ -2879,6 +2879,8 @@ impl Compositor {
             Action::KeyDown { key } => self.press_held_key(*key),
             Action::KeyUp { key } => self.release_held_key(*key),
             Action::Text { text } => {
+                let events = self.taps.release_current_epoch();
+                self.apply_tap_events(events);
                 let method = if self.text_input.send(text.as_str()) {
                     "text-input"
                 } else {

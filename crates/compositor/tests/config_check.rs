@@ -154,17 +154,40 @@ order = 1
         let context = tehuti_protocol::parse_context(&global).unwrap();
         for mapping in context.speech_mappings() {
             assert!(
-                !matches!(
-                    mapping.action,
+                !mapping.actions.iter().any(|action| matches!(
+                    action,
                     tehuti_protocol::Action::Layout {
                         action: tehuti_protocol::LayoutAction::SwitchPresetColumnWidth
                             | tehuti_protocol::LayoutAction::SwitchPresetColumnWidthBack
                     }
-                ),
+                )),
                 "step phrase {:?} remains",
                 mapping.phrase
             );
         }
+    }
+
+    #[test]
+    fn neovim_example_passes_check_config_with_no_errors_or_warnings() {
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "neovim/context.toml",
+            include_str!("../../../examples/neovim/context.toml"),
+        );
+        let report = check(directory.path());
+        assert!(!report.has_errors(), "neovim example has errors: {report}");
+        assert_eq!(
+            report.findings,
+            vec![],
+            "neovim example should have no warnings: {report}"
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_tehuti"))
+            .args(["--check-config".as_ref(), directory.path().as_os_str()])
+            .env_clear()
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "binary check failed: {output:?}");
     }
 
     #[test]
