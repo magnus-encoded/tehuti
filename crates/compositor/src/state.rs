@@ -5213,7 +5213,10 @@ mod tests {
 
         compositor.advance_clocks(Duration::from_millis(40));
         assert!(compositor.release_timer_fired().is_some());
-        assert!(!is_down(&compositor, ctrl), "prefix modifier releases before follow-up");
+        assert!(
+            !is_down(&compositor, ctrl),
+            "prefix modifier releases before follow-up"
+        );
         assert!(!is_down(&compositor, prefix));
         assert!(is_down(&compositor, follow));
 
@@ -5256,6 +5259,9 @@ mod tests {
 
         assert!(!is_down(&compositor, ctrl));
         assert!(!is_down(&compositor, prefix));
-        assert!(!is_down(&compositor, detach), "cancelled step must not leak to new focus");
+        assert!(
+            !is_down(&compositor, detach),
+            "cancelled step must not leak to new focus"
+        );
     }
 }

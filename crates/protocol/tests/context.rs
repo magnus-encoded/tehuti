@@ -1113,14 +1113,12 @@ text = "a\u0000b"
         ));
         assert!(over_limit.is_err(), "over-long sequence must fail");
 
-        let bad_key =
-            parse_context("app_id = 'test'\n[buttons]\neast = { sequence = [{ key = 'florp' }] }")
-                .unwrap_err();
+        let bad_key = parse_context("app_id = 'test'\n[buttons]\neast = { sequence = [{ key = 'florp' }] }")
+            .unwrap_err();
         assert!(bad_key.contains("florp"), "{bad_key}");
 
-        let bad_hold = parse_context(
-            "app_id = 'test'\n[buttons]\neast = { sequence = [{ key = 'b', hold = true }] }",
-        );
+        let bad_hold =
+            parse_context("app_id = 'test'\n[buttons]\neast = { sequence = [{ key = 'b', hold = true }] }");
         assert!(bad_hold.is_err(), "hold is not valid inside a sequence step");
     }
 

@@ -227,11 +227,7 @@ pub fn action_text(action: &Action) -> String {
         Action::Layout { action } => layout_text(*action).into(),
         Action::ToggleTicker => "Ticker".into(),
         Action::UndoDictation => "Undo".into(),
-        Action::Sequence { steps } => steps
-            .iter()
-            .map(sequence_step_text)
-            .collect::<Vec<_>>()
-            .join(" "),
+        Action::Sequence { steps } => steps.iter().map(sequence_step_text).collect::<Vec<_>>().join(" "),
     }
 }
 
