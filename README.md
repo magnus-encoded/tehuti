@@ -4,6 +4,9 @@
 
 A desktop environment you drive with a game controller and your voice.
 
+[![Watch a one-minute video tour of tehuti](https://gitdiagram.com/video-badge.svg)](https://gitdiagram.com/magnus-encoded/tehuti/video)
+
+
 Tehuti is a Wayland compositor and shell. Windows sit in a scrolling row of
 columns. A controller moves between them, opens apps and types on an on-screen
 keyboard. Hold a button and speak to launch an app, run a command or dictate
