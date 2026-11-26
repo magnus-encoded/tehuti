@@ -80,6 +80,7 @@ pub mod system_menu;
 pub mod desktop_hints;
 
 pub mod choice_list;
+pub mod help_overlay;
 
 pub mod window_context;
 pub mod xwayland;

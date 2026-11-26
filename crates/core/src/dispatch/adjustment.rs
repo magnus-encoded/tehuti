@@ -13,13 +13,16 @@ pub(super) fn adjuster_phrase(
     if !dictation
         && let Event::Speech { text } = event
         && is_adjuster_phrase(state, text.as_str())
-        && state
+    {
+        if state
             .launcher
             .as_ref()
             .is_some_and(|launcher| launcher.list().is_open())
-    {
-        // An adjuster phrase opens its gauge rather than searching the launcher.
-        state.launcher = None;
+        {
+            // An adjuster phrase opens its gauge rather than searching the launcher.
+            state.launcher = None;
+        }
+        state.help_overlay = None;
     }
     if !dictation
         && !state.keyboard.password_field_active()

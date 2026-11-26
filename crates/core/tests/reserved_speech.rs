@@ -12,6 +12,8 @@ mod reserved_speech {
             "work on notes",
             "Start recording.",
             "STOP RECORDING!",
+            "What can I say?",
+            "WHAT CAN I SAY.",
         ] {
             let (_, actions) = tehuti_core::step(
                 tehuti_core::State::default(),

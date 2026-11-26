@@ -412,6 +412,30 @@ pub fn entries_with_modifier(
     entries_for(active, global, pad, level, modifier)
 }
 
+/// Whether a ticker mapping belongs to the focused context or the global layer.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Origin {
+    Focused,
+    Global,
+}
+
+/// Whether a ticker mapping is triggered by a controller input or a spoken phrase.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum TriggerKind {
+    Pad,
+    Voice,
+}
+
+/// A ticker entry paired with its origin, trigger kind, runnable action and spoken phrases.
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+pub struct MappedEntry {
+    pub origin: Origin,
+    pub kind: TriggerKind,
+    pub entry: Entry,
+    pub action: Option<Action>,
+    pub phrases: Vec<String>,
+}
+
 pub(crate) fn entries_for(
     active: Option<&Context>,
     global: Option<&Context>,
@@ -419,15 +443,39 @@ pub(crate) fn entries_for(
     level: crate::Level,
     modifier: Option<ButtonName>,
 ) -> Vec<Entry> {
-    let mut entries = button_entries(active, global, pad, level);
-    if !(level == crate::Level::App && active.is_some_and(Context::passthrough)) {
-        entries.extend(stick_entries(active, pad, modifier));
-    }
     let speech = active
         .and_then(|context| context.ticker().speech)
         .or_else(|| global.and_then(|context| context.ticker().speech))
         .unwrap_or(TickerSpeech::All);
-    entries.extend(speech_entries(active, global, speech));
+    mapped_entries_for(active, global, pad, level, modifier, None, speech, false)
+        .into_iter()
+        .map(|mapped| mapped.entry)
+        .collect()
+}
+
+/// Builds every ticker entry with its origin, trigger kind, action and phrases.
+///
+/// When `separate_origins` is true, focused and global voice phrases with the same action stay in
+/// separate entries so callers such as the help overlay can group them by layer.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "shares one pure ticker projection between the scrolling bar and the help overlay"
+)]
+pub(crate) fn mapped_entries_for(
+    active: Option<&Context>,
+    global: Option<&Context>,
+    pad: PadFamily,
+    level: crate::Level,
+    modifier: Option<ButtonName>,
+    talk_override: Option<&[ButtonName]>,
+    speech: TickerSpeech,
+    separate_origins: bool,
+) -> Vec<MappedEntry> {
+    let mut entries = button_entries(active, global, pad, level, talk_override);
+    if !(level == crate::Level::App && active.is_some_and(Context::passthrough)) {
+        entries.extend(stick_entries(active, pad, modifier));
+    }
+    entries.extend(speech_entries(active, global, speech, separate_origins));
     entries
 }
 
@@ -451,59 +499,147 @@ fn button_entries(
     global: Option<&Context>,
     pad: PadFamily,
     level: crate::Level,
-) -> Vec<Entry> {
-    let talk = active
-        .and_then(Context::own_push_to_talk)
-        .unwrap_or_else(|| global.map_or(&[ButtonName::Record][..], Context::push_to_talk_buttons));
+    talk_override: Option<&[ButtonName]>,
+) -> Vec<MappedEntry> {
+    let context_talk = active.and_then(Context::own_push_to_talk);
+    let talk = talk_override.unwrap_or_else(|| {
+        context_talk
+            .unwrap_or_else(|| global.map_or(&[ButtonName::Record][..], Context::push_to_talk_buttons))
+    });
+    let talk_origin = if talk_override.is_none() && context_talk.is_some() {
+        Origin::Focused
+    } else {
+        Origin::Global
+    };
     if level == crate::Level::App && active.is_some_and(Context::passthrough) {
-        let mut entries = vec![Entry {
-            trigger: vec![Piece::Text("Pad".into())],
-            result: vec![Piece::Text("app".into())],
-        }];
-        entries.push(talk_entry(chord_pieces(talk, pad)));
-        entries.extend(
-            BUTTONS
-                .iter()
-                .filter_map(|button| label_entry(active, *button, pad)),
-        );
-        return entries;
+        return passthrough_button_entries(active, pad, talk, talk_origin);
     }
     let passthrough = active.is_some_and(Context::passthrough);
     BUTTONS
         .iter()
         .filter_map(|button| {
-            let trigger = vec![pad.piece(*button)];
-            if talk.contains(button) {
-                return Some(talk_entry(trigger));
-            }
-            if level == crate::Level::Columns
-                && let Some(action) = column_action(*button)
-            {
-                return Some(Entry::new(trigger, &action, None));
-            }
-            if let Some(entry) = label_entry(active, *button, pad) {
-                return Some(entry);
-            }
-            let context = active
-                .filter(|context| context.action_for(*button).is_some())
-                .or(if passthrough { None } else { global });
-            let action = context
-                .and_then(|context| context.action_for(*button))
-                .or_else(|| {
-                    (!passthrough && *button == pad.button(crate::pad::Role::Confirm)).then_some(
-                        Action::Key {
-                            key: KeyName::Enter,
-                            mods: Vec::new(),
-                        },
-                    )
-                })?;
-            Some(mapped_entry(trigger, context, *button, &action))
+            normal_button_entry(
+                active,
+                global,
+                pad,
+                level,
+                passthrough,
+                talk,
+                talk_origin,
+                *button,
+            )
         })
         .collect()
 }
 
+fn passthrough_button_entries(
+    active: Option<&Context>,
+    pad: PadFamily,
+    talk: &[ButtonName],
+    talk_origin: Origin,
+) -> Vec<MappedEntry> {
+    let mut entries = vec![
+        MappedEntry {
+            origin: Origin::Focused,
+            kind: TriggerKind::Pad,
+            entry: Entry {
+                trigger: vec![Piece::Text("Pad".into())],
+                result: vec![Piece::Text("app".into())],
+            },
+            action: None,
+            phrases: Vec::new(),
+        },
+        MappedEntry {
+            origin: talk_origin,
+            kind: TriggerKind::Pad,
+            entry: talk_entry(chord_pieces(talk, pad)),
+            action: None,
+            phrases: Vec::new(),
+        },
+    ];
+    entries.extend(BUTTONS.iter().filter_map(|button| {
+        label_entry(active, *button, pad).map(|entry| MappedEntry {
+            origin: Origin::Focused,
+            kind: TriggerKind::Pad,
+            entry,
+            action: None,
+            phrases: Vec::new(),
+        })
+    }));
+    entries
+}
+
+#[expect(
+    clippy::too_many_arguments,
+    reason = "resolves one button row against the active context, global context and level"
+)]
+fn normal_button_entry(
+    active: Option<&Context>,
+    global: Option<&Context>,
+    pad: PadFamily,
+    level: crate::Level,
+    passthrough: bool,
+    talk: &[ButtonName],
+    talk_origin: Origin,
+    button: ButtonName,
+) -> Option<MappedEntry> {
+    let trigger = vec![pad.piece(button)];
+    if talk.contains(&button) {
+        return Some(MappedEntry {
+            origin: talk_origin,
+            kind: TriggerKind::Pad,
+            entry: talk_entry(trigger),
+            action: None,
+            phrases: Vec::new(),
+        });
+    }
+    if level == crate::Level::Columns
+        && let Some(action) = column_action(button)
+    {
+        return Some(MappedEntry {
+            origin: Origin::Global,
+            kind: TriggerKind::Pad,
+            entry: Entry::new(trigger, &action, None),
+            action: Some(action),
+            phrases: Vec::new(),
+        });
+    }
+    if let Some(entry) = label_entry(active, button, pad) {
+        return Some(MappedEntry {
+            origin: Origin::Focused,
+            kind: TriggerKind::Pad,
+            entry,
+            action: None,
+            phrases: Vec::new(),
+        });
+    }
+    let focused_maps = active.is_some_and(|context| context.action_for(button).is_some());
+    let (origin, context) = if focused_maps {
+        (Origin::Focused, active)
+    } else if passthrough {
+        (Origin::Global, None)
+    } else {
+        (Origin::Global, global)
+    };
+    let action = context
+        .and_then(|context| context.action_for(button))
+        .or_else(|| {
+            (!passthrough && button == pad.button(crate::pad::Role::Confirm)).then_some(Action::Key {
+                key: KeyName::Enter,
+                mods: Vec::new(),
+            })
+        })?;
+    Some(MappedEntry {
+        origin,
+        kind: TriggerKind::Pad,
+        entry: mapped_entry(trigger, context, button, &action),
+        action: Some(action),
+        phrases: Vec::new(),
+    })
+}
+
 /// The focused context's stick mappings for the held modifier, or the unmodified ones.
-fn stick_entries(active: Option<&Context>, pad: PadFamily, modifier: Option<ButtonName>) -> Vec<Entry> {
+fn stick_entries(active: Option<&Context>, pad: PadFamily, modifier: Option<ButtonName>) -> Vec<MappedEntry> {
     let Some(context) = active else {
         return Vec::new();
     };
@@ -519,7 +655,13 @@ fn stick_entries(active: Option<&Context>, pad: PadFamily, modifier: Option<Butt
                 if let Some(name) = key_name(context, &mapping.action) {
                     entry.result = vec![Piece::Text(name.into())];
                 }
-                Some(entry)
+                Some(MappedEntry {
+                    origin: Origin::Focused,
+                    kind: TriggerKind::Pad,
+                    entry,
+                    action: Some(mapping.action.clone()),
+                    phrases: Vec::new(),
+                })
             })
         })
         .collect()
@@ -622,18 +764,31 @@ fn chord_pieces(chord: &[ButtonName], pad: PadFamily) -> Vec<Piece> {
     pieces
 }
 
-fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: TickerSpeech) -> Vec<Entry> {
+fn speech_entries(
+    active: Option<&Context>,
+    global: Option<&Context>,
+    shown: TickerSpeech,
+    separate_origins: bool,
+) -> Vec<MappedEntry> {
     if shown == TickerSpeech::None {
         return Vec::new();
     }
     let mut seen = std::collections::HashSet::new();
-    let mut groups: Vec<(Action, Option<String>, Vec<String>)> = Vec::new();
-    let contexts = if shown == TickerSpeech::Own {
-        vec![active.or(global)]
+    let mut groups: Vec<(Origin, Action, Option<String>, Vec<String>)> = Vec::new();
+    let contexts: Vec<(Origin, &Context)> = if shown == TickerSpeech::Own {
+        active
+            .map(|context| (Origin::Focused, context))
+            .or_else(|| global.map(|context| (Origin::Global, context)))
+            .into_iter()
+            .collect()
     } else {
-        vec![active, global]
+        active
+            .map(|context| (Origin::Focused, context))
+            .into_iter()
+            .chain(global.map(|context| (Origin::Global, context)))
+            .collect()
     };
-    for context in contexts.into_iter().flatten() {
+    for (origin, context) in contexts {
         for mapping in context.speech_mappings() {
             if !seen.insert(normalize_phrase(mapping.phrase)) {
                 continue;
@@ -644,16 +799,17 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
             }
             let phrase = display_phrase(mapping.phrase);
             let icon = icon.map(str::to_owned);
-            match groups
-                .iter_mut()
-                .find(|(action, group_icon, _)| *action == mapping.action && *group_icon == icon)
-            {
-                Some((_, _, phrases)) => phrases.push(phrase),
-                None => groups.push((mapping.action, icon, vec![phrase])),
+            match groups.iter_mut().find(|(group_origin, action, group_icon, _)| {
+                (!separate_origins || *group_origin == origin)
+                    && *action == mapping.action
+                    && *group_icon == icon
+            }) {
+                Some((_, _, _, phrases)) => phrases.push(phrase),
+                None => groups.push((origin, mapping.action, icon, vec![phrase])),
             }
         }
     }
-    for (_, _, phrases) in &mut groups {
+    for (_, _, _, phrases) in &mut groups {
         phrases.sort_by(|left, right| {
             left.chars()
                 .count()
@@ -661,7 +817,7 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
                 .then_with(|| left.cmp(right))
         });
     }
-    groups.sort_by(|(_, left_icon, left), (_, right_icon, right)| {
+    groups.sort_by(|(_, _, left_icon, left), (_, _, right_icon, right)| {
         right_icon
             .is_some()
             .cmp(&left_icon.is_some())
@@ -669,7 +825,7 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
     });
     groups
         .into_iter()
-        .map(|(action, icon, phrases)| {
+        .map(|(origin, action, icon, phrases)| {
             let mut trigger = phrases
                 .iter()
                 .take(PHRASES_SHOWN)
@@ -679,7 +835,14 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
             if phrases.len() > PHRASES_SHOWN {
                 trigger.push_str(" /\u{2026}");
             }
-            Entry::new(vec![Piece::Text(trigger)], &action, icon.as_deref())
+            let entry = Entry::new(vec![Piece::Text(trigger)], &action, icon.as_deref());
+            MappedEntry {
+                origin,
+                kind: TriggerKind::Voice,
+                entry,
+                action: Some(action),
+                phrases,
+            }
         })
         .collect()
 }
