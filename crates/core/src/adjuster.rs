@@ -21,7 +21,7 @@ pub const STEP_REPEAT_INTERVAL: Duration = Duration::from_millis(120);
 
 /// Clamps a brightness percentage to [`BRIGHTNESS_MIN`]..=[`BRIGHTNESS_MAX`].
 #[must_use]
-pub const fn clamp_brightness(value: u8) -> u8 {
+pub fn clamp_brightness(value: u8) -> u8 {
     value.clamp(BRIGHTNESS_MIN, BRIGHTNESS_MAX)
 }
 
@@ -84,7 +84,7 @@ fn parse_spoken_percent(text: &str) -> Option<u8> {
     }
 }
 
-const fn spoken_ones(word: &str) -> Option<u8> {
+fn spoken_ones(word: &str) -> Option<u8> {
     match word {
         "one" => Some(1),
         "two" => Some(2),
@@ -99,7 +99,7 @@ const fn spoken_ones(word: &str) -> Option<u8> {
     }
 }
 
-const fn spoken_under_twenty(word: &str) -> Option<u8> {
+fn spoken_under_twenty(word: &str) -> Option<u8> {
     if let Some(value) = spoken_ones(word) {
         return Some(value);
     }
@@ -118,7 +118,7 @@ const fn spoken_under_twenty(word: &str) -> Option<u8> {
     }
 }
 
-const fn spoken_tens(word: &str) -> Option<u8> {
+fn spoken_tens(word: &str) -> Option<u8> {
     match word {
         "twenty" => Some(20),
         "thirty" => Some(30),
@@ -381,7 +381,7 @@ impl Gauge {
     }
 
     /// Jumps directly to an absolute level while the gauge is open.
-    pub(crate) const fn set_value(&mut self, value: i32) -> bool {
+    pub(crate) fn set_value(&mut self, value: i32) -> bool {
         self.held_step = None;
         self.moved = true;
         self.idle = Duration::ZERO;
