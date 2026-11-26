@@ -232,9 +232,14 @@ It starts with a snapshot and emits changed snapshots while connected, using
 one sequence counter per subscription. `data` contains a typed list of focus,
 context, workspace, open window, output mode and notice records. A closed window
 is absent from the next snapshot. Window and workspace records use `id` and
-`focused`, as does `status`. Input has no event variant: button names, stick
-coordinates, key presses, typed text and speech never enter the stream. Window
-titles, secret values, configuration contents and approval answers are omitted.
+`focused`, as does `status`. The latest 256 pad input and keyboard summary records
+are retained in each snapshot, with record sequence numbers for deduplication.
+Outside the on-screen keyboard, button names, button states and stick coordinates
+enter the stream. While it is open, inputs only increment counts. Closing it adds
+one `keyboard_summary`: input counts for `letters`, `capitals` and `symbols`, plus
+`character_edits` and `word_edits` (edits of a picked word). The close button's
+release stays suppressed. Key presses, typed text, speech, window titles, secret
+values, configuration contents and approval answers are omitted.
 
 `display mode WIDTHxHEIGHT[@HZ]` chooses supported dimensions first, then
 refresh rate. Repeated requests retain the first restore point;

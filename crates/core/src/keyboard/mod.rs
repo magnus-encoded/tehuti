@@ -734,6 +734,7 @@ impl Keyboard {
     }
 
     /// Character edits and picked-word edits in the current session.
+    #[must_use]
     pub const fn edit_counts(&self) -> (u64, u64) {
         self.edit_counts
     }

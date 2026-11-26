@@ -344,6 +344,15 @@ mod tests {
                 )
                 .unwrap();
         }
+        let _rest = driver
+            .execute(
+                &mut compositor,
+                tehuti::driver::Request::Stick {
+                    left: (0, 0),
+                    right: (0, 0),
+                },
+            )
+            .unwrap();
         let _word = driver
             .execute(
                 &mut compositor,
@@ -393,7 +402,7 @@ mod tests {
             closed_events.last().unwrap(),
             &json!({
                 "kind": "keyboard_summary", "sequence": 4,
-                "inputs": {"letters": 10, "capitals": 0, "symbols": 2},
+                "inputs": {"letters": 11, "capitals": 0, "symbols": 2},
                 "character_edits": 1, "word_edits": 1,
             })
         );
