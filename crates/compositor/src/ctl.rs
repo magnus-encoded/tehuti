@@ -253,15 +253,13 @@ fn service(peer: &mut Peer, execute: &mut impl FnMut(Command) -> Result<Value, S
             let Some(end) = peer.input.iter().position(|byte| *byte == b'\n') else {
                 return true;
             };
-            let result = serde_json::from_slice::<Request>(peer.input.get(..end).unwrap_or_default())
-                .map_err(|_| "invalid ctl request".to_owned())
-                .and_then(|request| {
-                    if request.version != 1 {
-                        return Err("unsupported ctl version".into());
-                    }
-                    peer.events = matches!(request.command, Command::Events);
-                    execute(request.command)
-                });
+            let result = decode_request(peer.input.get(..end).unwrap_or_default()).and_then(|request| {
+                if request.version != 1 {
+                    return Err("unsupported ctl version".into());
+                }
+                peer.events = matches!(request.command, Command::Events);
+                execute(request.command)
+            });
             let reply = match result {
                 Ok(value) if peer.events => {
                     peer.last = Some(value.clone());
@@ -300,6 +298,22 @@ fn service(peer: &mut Peer, execute: &mut impl FnMut(Command) -> Result<Value, S
         }
         Err(error) => error.kind() == io::ErrorKind::WouldBlock,
     }
+}
+
+fn decode_request(bytes: &[u8]) -> Result<Request, String> {
+    let invalid = || "invalid ctl request".to_owned();
+    let value: Value = serde_json::from_slice(bytes).map_err(|_| invalid())?;
+    let request = Request::deserialize(&value).map_err(|_| invalid())?;
+    let supplied = value
+        .get("command")
+        .and_then(Value::as_object)
+        .ok_or_else(invalid)?;
+    let command = serde_json::to_value(&request.command).map_err(|_| invalid())?;
+    let fields = command.as_object().ok_or_else(invalid)?;
+    if supplied.keys().any(|key| !fields.contains_key(key)) {
+        return Err(invalid());
+    }
+    Ok(request)
 }
 
 impl Drop for Server {
