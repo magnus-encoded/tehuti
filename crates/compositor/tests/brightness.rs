@@ -200,17 +200,7 @@ mod tests {
         }
     }
 
-    #[test]
-    fn pad_nudges_and_hold_repeat_update_hardware_bar_and_gauge() {
-        let sysfs = tempfile::tempdir().unwrap();
-        write_sysfs_device(sysfs.path(), "panel0", "raw", 500, 200, 200);
-        let brightness_file = sysfs.path().join("panel0/brightness");
-        let backend =
-            Backend::with_sysfs_and_ddc(sysfs.path().to_path_buf(), |_| Err(Error::NoDevice)).unwrap();
-        let display = Display::<Compositor>::new().unwrap();
-        let mut compositor = Compositor::new(&display.handle()).unwrap();
-        compositor.set_brightness_backend(backend);
-
+    fn open_brightness_adjuster(compositor: &mut Compositor) {
         compositor.handle(&Event::Speech {
             text: Text::new("brightness".into()).unwrap(),
         });
@@ -223,14 +213,32 @@ mod tests {
             });
             std::thread::yield_now();
         }
+    }
+
+    fn bar_has_segment(compositor: &Compositor, text: &str, tone: Option<Tone>) -> bool {
+        compositor
+            .voice_bar()
+            .segments()
+            .iter()
+            .any(|segment| segment.text == text && tone.is_none_or(|wanted| segment.tone == wanted))
+    }
+
+    #[test]
+    fn pad_nudges_and_hold_repeat_update_hardware_bar_and_gauge() {
+        let sysfs = tempfile::tempdir().unwrap();
+        write_sysfs_device(sysfs.path(), "panel0", "raw", 500, 200, 200);
+        let brightness_file = sysfs.path().join("panel0/brightness");
+        let backend =
+            Backend::with_sysfs_and_ddc(sysfs.path().to_path_buf(), |_| Err(Error::NoDevice)).unwrap();
+        let display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        compositor.set_brightness_backend(backend);
+
+        open_brightness_adjuster(&mut compositor);
         let before = raster(compositor.adjuster().unwrap()).unwrap();
         assert_eq!(before.len(), 280 * 224 * 4);
         assert!(
-            compositor
-                .voice_bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "brightness 40" && segment.tone == Tone::Live),
+            bar_has_segment(&compositor, "brightness 40", Some(Tone::Live)),
             "bar must show the live spoken brightness unit while adjusting"
         );
 
@@ -243,17 +251,9 @@ mod tests {
             i32::from(40_u8.saturating_add(BRIGHTNESS_STEP))
         );
         wait_for_file_value(&brightness_file, "225");
-        assert_ne!(
-            before,
-            raster(compositor.adjuster().unwrap()).unwrap(),
-            "stepping brightness must update the gauge"
-        );
+        assert_ne!(before, raster(compositor.adjuster().unwrap()).unwrap());
         assert!(
-            compositor
-                .voice_bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "brightness 45" && segment.tone == Tone::Live),
+            bar_has_segment(&compositor, "brightness 45", Some(Tone::Live)),
             "bar must reflect each pad nudge immediately"
         );
 
@@ -270,16 +270,9 @@ mod tests {
             name: ButtonName::South,
             state: ButtonState::Pressed,
         });
+        assert!(compositor.adjuster().is_none(), "South confirms and closes");
         assert!(
-            compositor.adjuster().is_none(),
-            "South (A) must confirm and close the adjuster"
-        );
-        assert!(
-            compositor
-                .voice_bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "brightness 55"),
+            bar_has_segment(&compositor, "brightness 55", None),
             "bar must confirm the final brightness unit"
         );
     }

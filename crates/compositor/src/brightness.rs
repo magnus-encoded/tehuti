@@ -195,11 +195,7 @@ pub fn percent_to_raw(percent: u8, max: u64) -> u64 {
 pub fn parse_ddc_terse(text: &str) -> Result<(u64, u64), Error> {
     for line in text.lines() {
         let tokens: Vec<&str> = line.split_whitespace().collect();
-        if let [vcp, code, kind, current, max, ..] = tokens.as_slice()
-            && *vcp == "VCP"
-            && *code == "10"
-            && *kind == "C"
-        {
+        if let ["VCP", "10", "C", current, max, ..] = tokens.as_slice() {
             let current: u64 = current
                 .parse()
                 .map_err(|_| Error::Failed("invalid DDC brightness value".into()))?;

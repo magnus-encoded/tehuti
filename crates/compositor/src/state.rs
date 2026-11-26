@@ -3603,9 +3603,6 @@ impl Compositor {
         if let Some(status) = self.plugins.as_ref().and_then(crate::plugins::Plugins::status) {
             bar = bar.with_status(status);
         }
-        if let Some(gauge) = self.adjuster().filter(|gauge| !gauge.is_stepper()) {
-            bar = bar.with_adjuster(gauge.unit_label());
-        }
         if let Some(text) = self
             .workspace_feedback
             .text(self.clock_elapsed(), self.launcher.table())
@@ -3617,6 +3614,9 @@ impl Compositor {
 
     fn recording_bar(&self, bar: tehuti_core::bar::Bar) -> tehuti_core::bar::Bar {
         let mut bar = bar.with_recording(self.recording_active());
+        if let Some(gauge) = self.adjuster().filter(|gauge| !gauge.is_stepper()) {
+            bar = bar.with_adjuster(gauge.unit_label());
+        }
         bar.font = self.settings().bar_font;
         bar
     }

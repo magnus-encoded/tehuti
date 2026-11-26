@@ -5780,58 +5780,22 @@ fn holding_dpad_repeats_brightness_steps_and_release_stops_it() {
     let state = world.run(State::default(), speech_event("brightness"));
     let state = world.run(state, Input::Brightness(Some(40)));
     let state = world.run(state, pad_button(ButtonName::DpadUp, ButtonState::Pressed));
-    let after_one = i32::from(40_u8.saturating_add(BRIGHTNESS_STEP));
-    assert_eq!(
-        state.adjuster().map(crate::adjuster::Gauge::value),
-        Some(after_one)
-    );
-    let state = world.event(
-        state,
-        Event::Tick {
-            elapsed: STEP_REPEAT_DELAY.saturating_sub(Duration::from_millis(1)),
-        },
-    );
-    assert_eq!(
-        state.adjuster().map(crate::adjuster::Gauge::value),
-        Some(after_one),
-        "hold must not repeat before STEP_REPEAT_DELAY"
-    );
-    let state = world.event(
-        state,
-        Event::Tick {
-            elapsed: Duration::from_millis(1),
-        },
-    );
-    let after_two = i32::from(40_u8.saturating_add(BRIGHTNESS_STEP.saturating_mul(2)));
-    assert_eq!(
-        state.adjuster().map(crate::adjuster::Gauge::value),
-        Some(after_two),
-        "hold must repeat once STEP_REPEAT_DELAY elapses"
-    );
-    let state = world.event(
-        state,
-        Event::Tick {
-            elapsed: STEP_REPEAT_INTERVAL.saturating_mul(2),
-        },
-    );
-    let after_four = i32::from(40_u8.saturating_add(BRIGHTNESS_STEP.saturating_mul(4)));
-    assert_eq!(
-        state.adjuster().map(crate::adjuster::Gauge::value),
-        Some(after_four),
-        "hold must continue repeating at STEP_REPEAT_INTERVAL"
-    );
+    let step = |count: u8| Some(i32::from(40_u8.saturating_add(BRIGHTNESS_STEP.saturating_mul(count))));
+    let tick = |elapsed| Event::Tick { elapsed };
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), step(1));
+
+    let state = world.event(state, tick(STEP_REPEAT_DELAY.saturating_sub(Duration::from_millis(1))));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), step(1));
+
+    let state = world.event(state, tick(Duration::from_millis(1)));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), step(2));
+
+    let state = world.event(state, tick(STEP_REPEAT_INTERVAL.saturating_mul(2)));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), step(4));
+
     let state = world.run(state, pad_button(ButtonName::DpadUp, ButtonState::Released));
-    let state = world.event(
-        state,
-        Event::Tick {
-            elapsed: STEP_REPEAT_INTERVAL.saturating_mul(3),
-        },
-    );
-    assert_eq!(
-        state.adjuster().map(crate::adjuster::Gauge::value),
-        Some(after_four),
-        "releasing the button must stop repeat"
-    );
+    let state = world.event(state, tick(STEP_REPEAT_INTERVAL.saturating_mul(3)));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), step(4));
 }
 
 #[test]
