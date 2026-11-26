@@ -104,8 +104,13 @@ mod display_holders {
         let mut child = std::process::Command::new("sleep").arg("60").spawn().unwrap();
         let (mut compositor, _proc_root, _display) = compositor_with_holder(child.id());
         open_menu(&mut compositor);
-        // Log Out, Restart, Plasma, Task Monitor, Settings, then the close row.
-        for _ in 0..5 {
+        let menu_text = compositor.visible_notice_text().unwrap();
+        let row = menu_text
+            .lines()
+            .skip(1)
+            .position(|line| line.trim_start_matches(['>', ' ']) == "CLOSE DISPLAY HOLDER")
+            .unwrap();
+        for _ in 0..row {
             press(&mut compositor, ButtonName::DpadDown);
         }
         press(&mut compositor, ButtonName::South);
