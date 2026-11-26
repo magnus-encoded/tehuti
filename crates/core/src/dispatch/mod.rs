@@ -1564,7 +1564,7 @@ fn capture_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
     true
 }
 
-fn capture_chord(state: &mut State, event: &Event) -> bool {
+fn capture_chord(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
     let Event::Button { name, state: button } = event else {
         return false;
     };
@@ -1577,12 +1577,12 @@ fn capture_chord(state: &mut State, event: &Event) -> bool {
     let fresh = *button == ButtonState::Pressed && !state.core.chord_button_held(*name);
     let _actions = crate::escape_chord(&mut state.core, event);
     if fresh {
-        open_capture_choice(state);
+        open_capture_choice(state, effects);
     }
     true
 }
 
-fn open_capture_choice(state: &mut State) {
+fn open_capture_choice(state: &mut State, effects: &mut Vec<Effect>) {
     let options = crate::menu::capture_options(state.capture.recording);
     state.launcher = None;
     state.capture.commands = options.into_iter().map(|(command, _, _)| command).collect();
@@ -1590,6 +1590,7 @@ fn open_capture_choice(state: &mut State) {
         crate::menu::capture_choice_slots(state.capture.recording),
     ));
     state.capture.stick_engaged = stick_engaged(state.left_stick);
+    release_pad(state, Handoff::Open(Overlay::ChoiceList), effects);
 }
 
 #[expect(
@@ -1782,7 +1783,7 @@ fn reserved_safety(state: &mut State, event: &Event, dictation: bool, effects: &
     if !dictation && emergency_button(state, event) {
         return system_menu(state, event, effects);
     }
-    if !dictation && capture_chord(state, event) {
+    if !dictation && capture_chord(state, event, effects) {
         return true;
     }
     if (dictation || state.core.menu().is_none()) && password_suppresses(state, event) {
@@ -1935,6 +1936,9 @@ fn choice_list_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>
     if !state.choice_list_open() {
         return false;
     }
+    if !state.capture.commands.is_empty() && state.core.push_to_talk(*name) {
+        return false;
+    }
     if *button == ButtonState::Pressed && !state.choice_buttons.contains(name) {
         state.choice_buttons.push(*name);
         let family = state.core.pad_family();
@@ -2048,7 +2052,7 @@ fn mouse_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> b
 fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if crate::menu_button_release(&mut state.core, &event)
         || system_menu(state, &event, effects)
-        || capture_chord(state, &event)
+        || capture_chord(state, &event, effects)
     {
         return;
     }

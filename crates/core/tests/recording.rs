@@ -46,7 +46,11 @@ mod recording {
         assert!(!active.contains("START RECORDING"));
     }
 
-    fn drive(mut state: State, mut input: Input) -> (State, Vec<Effect>) {
+    fn drive(state: State, input: Input) -> (State, Vec<Effect>) {
+        drive_with_plugin(state, input, true)
+    }
+
+    fn drive_with_plugin(mut state: State, mut input: Input, plugin_active: bool) -> (State, Vec<Effect>) {
         let mut collected = Vec::new();
         for _ in 0..32 {
             let (next, effects) = step(state, input);
@@ -54,13 +58,15 @@ mod recording {
             input = Input::Resume;
             for effect in effects {
                 if let Effect::QueryPlugin(_) = effect {
-                    input = Input::PluginActive(true);
+                    input = Input::PluginActive(plugin_active);
                 } else if let Effect::DispatchPlugin { .. } = effect {
                     input = Input::PluginRequest(None);
                 } else if effect == Effect::ReadClock {
                     input = Input::ClockRead(Duration::ZERO);
                 } else if let Effect::ConfirmSecret(_) = effect {
                     input = Input::SecretConfirmation(false);
+                } else if let Effect::SpeechCommand(_) = effect {
+                    input = Input::SpeechSent(true);
                 } else if let Effect::PollSpeech(_) = effect {
                     input = Input::SpeechPolled(vec![]);
                 } else if effect == Effect::Supervise {
@@ -316,6 +322,66 @@ mod recording {
         assert!(
             !state.overlay_owns_pad(),
             "pad returns to passthrough after confirming"
+        );
+    }
+
+    #[test]
+    fn opening_capture_choice_releases_held_keys_and_allows_push_to_talk() {
+        use tehuti_core::speech::{SpeechEffect, SpeechInput};
+        use tehuti_protocol::{Action, KeyName};
+
+        let context = tehuti_protocol::parse_context(
+            "app_id = 'example-app'\n[buttons]\nwest = { key = 'enter', hold = true }",
+        )
+        .unwrap();
+        let initial = State::new(tehuti_core::State::with_contexts(vec![context]));
+        let (focused, _) = drive_with_plugin(
+            initial,
+            Input::Event {
+                event: Event::Focus {
+                    app_id: Some("example-app".into()),
+                    title: String::new(),
+                },
+                elapsed: Duration::ZERO,
+            },
+            false,
+        );
+        let (ready, _) = drive_with_plugin(focused, Input::Speech(SpeechInput::Available), false);
+        let (holding, down_effects) = drive_with_plugin(
+            ready,
+            Input::Event {
+                event: Event::Button {
+                    name: ButtonName::West,
+                    state: ButtonState::Pressed,
+                },
+                elapsed: Duration::ZERO,
+            },
+            false,
+        );
+        assert!(
+            down_effects.contains(&Effect::Apply(Action::KeyDown { key: KeyName::Enter })),
+            "holding West must press the mapped key"
+        );
+        let (guide_down, _) = press_button(holding, ButtonName::Guide, ButtonState::Pressed);
+        let (opened, open_effects) = press_button(guide_down, ButtonName::RightBumper, ButtonState::Pressed);
+        assert!(
+            open_effects.contains(&Effect::Apply(Action::KeyUp { key: KeyName::Enter })),
+            "opening capture choice must release held keys"
+        );
+        let (bumper_up, _) = press_button(opened, ButtonName::RightBumper, ButtonState::Released);
+        let (choice_open, _) = press_button(bumper_up, ButtonName::Guide, ButtonState::Released);
+        let (talking, talk_effects) = press_button(choice_open, ButtonName::Record, ButtonState::Pressed);
+        assert!(
+            talk_effects.contains(&Effect::SpeechCommand(SpeechEffect::Start { session: 0 })),
+            "push-to-talk must start while capture choice is open"
+        );
+        let (_, stop_effects) = press_button(talking, ButtonName::Record, ButtonState::Released);
+        assert!(
+            stop_effects.contains(&Effect::SpeechCommand(SpeechEffect::Stop {
+                session: 0,
+                transcribe: true,
+            })),
+            "releasing push-to-talk must transcribe while capture choice is open"
         );
     }
 
