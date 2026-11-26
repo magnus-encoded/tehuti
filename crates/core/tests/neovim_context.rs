@@ -9,9 +9,7 @@ mod neovim_context {
         stick_actions::StickActions,
         ticker::{self, PadFamily},
     };
-    use tehuti_protocol::{
-        Action, ButtonName, ButtonState, Event, KeyName, Modifier, Text, parse_context,
-    };
+    use tehuti_protocol::{Action, ButtonName, ButtonState, Event, KeyName, Modifier, Text, parse_context};
 
     const NEOVIM_SOURCE: &str = include_str!("../../../examples/neovim/context.toml");
 
@@ -155,10 +153,7 @@ mod neovim_context {
                     key(KeyName::L),
                 ],
             ),
-            (
-                ButtonName::West,
-                vec![key(KeyName::Escape), key(KeyName::N)],
-            ),
+            (ButtonName::West, vec![key(KeyName::Escape), key(KeyName::N)]),
             (
                 ButtonName::LeftTrigger,
                 vec![key(KeyName::Escape), chord(KeyName::N, vec![Modifier::Shift])],

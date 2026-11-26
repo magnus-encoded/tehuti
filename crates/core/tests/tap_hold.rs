@@ -142,11 +142,7 @@ mod tests {
             [(10, false), (20, false), (11, true)],
             "following H releases W and Ctrl before pressing H"
         );
-        assert_eq!(
-            taps.tick(millis(40)),
-            [(11, false)],
-            "only H remains to expire"
-        );
+        assert_eq!(taps.tick(millis(40)), [(11, false)], "only H remains to expire");
     }
 
     #[test]

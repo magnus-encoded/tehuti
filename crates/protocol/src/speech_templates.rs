@@ -12,9 +12,7 @@ const TEMPLATES: [(&str, &str); 3] = [
     reason = "crate-private helpers also satisfy unreachable_pub"
 )]
 pub(crate) fn is_template(phrase: &str) -> bool {
-    TEMPLATES
-        .iter()
-        .any(|(suffix, _)| phrase.ends_with(suffix))
+    TEMPLATES.iter().any(|(suffix, _)| phrase.ends_with(suffix))
 }
 
 fn action_has_slot(action: &MappingAction, slot: &str) -> bool {

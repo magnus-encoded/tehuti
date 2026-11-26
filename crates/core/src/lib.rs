@@ -820,14 +820,11 @@ pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<Stri
     let fell_through = if let [Action::Notice { text }] = actions.as_slice() {
         text.as_str() == NO_MAPPING_NOTICE
     } else {
-        [focused, global]
-            .into_iter()
-            .flatten()
-            .any(|context| {
-                context
-                    .unmatched_speech_action(phrase)
-                    .is_some_and(|action| actions == [action])
-            })
+        [focused, global].into_iter().flatten().any(|context| {
+            context
+                .unmatched_speech_action(phrase)
+                .is_some_and(|action| actions == [action])
+        })
     };
     if !fell_through {
         return None;

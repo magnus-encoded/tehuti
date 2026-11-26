@@ -85,9 +85,11 @@ impl<Key: Copy + Eq> TapHold<Key> {
             .iter()
             .any(|held| held.epoch == epoch && held.modifier && !modifiers.contains(&held.code));
         if stale_modifier {
-            events.extend(self.release(|held| {
-                held.epoch == epoch && (!held.modifier || !modifiers.contains(&held.code))
-            }));
+            events.extend(
+                self.release(|held| {
+                    held.epoch == epoch && (!held.modifier || !modifiers.contains(&held.code))
+                }),
+            );
         }
         for code in modifiers {
             if let Some(held) = self.held_taps.iter_mut().find(|held| held.code == *code) {

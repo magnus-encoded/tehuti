@@ -369,8 +369,10 @@ impl Entry {
             |icon| {
                 vec![Piece::Icon {
                     icon: icon.into(),
-                    fallback: icon_label(icon)
-                        .map_or_else(|| actions_pieces(actions), |label| vec![Piece::Text(label.into())]),
+                    fallback: icon_label(icon).map_or_else(
+                        || actions_pieces(actions),
+                        |label| vec![Piece::Text(label.into())],
+                    ),
                 }]
             },
         );

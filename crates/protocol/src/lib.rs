@@ -916,7 +916,11 @@ impl Context {
         self.mapped_speech_actions(phrase)
             .or_else(|| self.folded_speech_actions(phrase))
             .or_else(|| self.plural_speech_actions(phrase))
-            .or_else(|| self.prefix_speech_action(phrase).flatten().map(|action| vec![action]))
+            .or_else(|| {
+                self.prefix_speech_action(phrase)
+                    .flatten()
+                    .map(|action| vec![action])
+            })
             .or_else(|| self.unmatched_speech_action(phrase).map(|action| vec![action]))
     }
 
@@ -1083,7 +1087,9 @@ impl Context {
 
     #[must_use]
     pub fn action_for(&self, button: ButtonName) -> Option<Action> {
-        self.buttons.get(&button).and_then(|mapping| single_action(mapping.actions()))
+        self.buttons
+            .get(&button)
+            .and_then(|mapping| single_action(mapping.actions()))
     }
 
     /// Every action `button` sends on press, including multi-step sequences.
