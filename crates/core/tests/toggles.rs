@@ -46,8 +46,8 @@ mod toggles {
 
     fn run(mut state: State, input: Input) -> (State, Vec<Effect>) {
         let depth = state.busy();
-        let (next, mut effects) = step(state, input);
-        state = next;
+        let (initial, mut effects) = step(state, input);
+        state = initial;
         let mut trace = Vec::new();
         loop {
             let mut reply = Input::Resume;
@@ -60,8 +60,8 @@ mod toggles {
             if state.busy() <= depth {
                 return (state, trace);
             }
-            let (next, next_effects) = step(state, reply);
-            state = next;
+            let (next_state, next_effects) = step(state, reply);
+            state = next_state;
             effects = next_effects;
         }
     }
@@ -79,7 +79,7 @@ mod toggles {
     }
 
     fn press(state: State, name: ButtonName) -> (State, Vec<Effect>) {
-        let (state, mut first) = run(
+        let (after_press, mut first) = run(
             state,
             Input::Event {
                 event: Event::Button {
@@ -89,8 +89,8 @@ mod toggles {
                 elapsed: Duration::ZERO,
             },
         );
-        let (state, second) = run(
-            state,
+        let (after_release, second) = run(
+            after_press,
             Input::Event {
                 event: Event::Button {
                     name,
@@ -100,7 +100,7 @@ mod toggles {
             },
         );
         first.extend(second);
-        (state, first)
+        (after_release, first)
     }
 
     fn mode_segments(state: &State) -> Vec<Segment> {
@@ -114,41 +114,44 @@ mod toggles {
     }
 
     fn open_toggles_page(state: State) -> State {
-        let (mut state, _) = say(state, "Pop the hood.");
+        let (mut current, _) = say(state, "Pop the hood.");
         for _ in 0..3 {
-            state = press(state, ButtonName::DpadDown).0;
+            current = press(current, ButtonName::DpadDown).0;
         }
-        assert_eq!(state.settings().category, Category::Toggles);
-        state = press(state, ButtonName::South).0;
-        assert_eq!(state.settings().page, Page::Toggles);
-        state
+        assert_eq!(current.settings().category, Category::Toggles);
+        current = press(current, ButtonName::South).0;
+        assert_eq!(current.settings().page, Page::Toggles);
+        current
     }
 
     #[test]
     fn voice_sets_named_target_states_and_never_toggles_without_a_state() {
-        let state = State::default();
-        assert!(mode_segments(&state).is_empty(), "no chips show initially");
+        let initial = State::default();
+        assert!(mode_segments(&initial).is_empty(), "no chips show initially");
 
-        let (state, effects) = say(state, "stay awake");
+        let (after_bare, bare_effects) = say(initial, "stay awake");
         assert!(
-            !state.toggles().builtin_active(BuiltinMode::StayAwake),
+            !after_bare.toggles().builtin_active(BuiltinMode::StayAwake),
             "bare mode name does not flip"
         );
-        assert!(mode_segments(&state).is_empty(), "bare mode name adds no chip");
         assert!(
-            !effects
+            mode_segments(&after_bare).is_empty(),
+            "bare mode name adds no chip"
+        );
+        assert!(
+            !bare_effects
                 .iter()
                 .any(|effect| matches!(effect, Effect::ModeToggleChanged { .. })),
             "bare mode name emits no toggle effect"
         );
 
-        let (state, effects) = say(state, "Stay awake on.");
+        let (after_on, on_effects) = say(after_bare, "Stay awake on.");
         assert!(
-            state.toggles().builtin_active(BuiltinMode::StayAwake),
+            after_on.toggles().builtin_active(BuiltinMode::StayAwake),
             "stay awake turns on"
         );
         assert!(
-            effects.contains(&Effect::ModeToggleChanged {
+            on_effects.contains(&Effect::ModeToggleChanged {
                 owner: Owner::Builtin(BuiltinMode::StayAwake),
                 name: "stay awake".into(),
                 active: true,
@@ -156,26 +159,26 @@ mod toggles {
             "turning stay awake on emits ModeToggleChanged"
         );
         assert_eq!(
-            mode_segments(&state),
+            mode_segments(&after_on),
             vec![Segment {
                 text: "Stay awake".into(),
                 tone: Tone::Mode,
             }]
         );
 
-        let (state, effects) = say(state, "stay awake on");
+        let (after_repeat, repeat_effects) = say(after_on, "stay awake on");
         assert!(
-            state.toggles().builtin_active(BuiltinMode::StayAwake),
+            after_repeat.toggles().builtin_active(BuiltinMode::StayAwake),
             "idempotent stay awake on"
         );
         assert!(
-            !effects
+            !repeat_effects
                 .iter()
                 .any(|effect| matches!(effect, Effect::ModeToggleChanged { .. })),
             "repeating an already-active target emits no duplicate effect"
         );
         assert!(
-            !effects
+            !repeat_effects
                 .iter()
                 .any(|effect| matches!(effect, Effect::Apply(Action::Notice { .. }))),
             "repeating an already-active target is consumed"
@@ -184,53 +187,53 @@ mod toggles {
 
     #[test]
     fn voice_shows_and_hides_multiple_mode_chips_only_while_active() {
-        let (state, _) = say(State::default(), "stay awake on");
-        let (state, effects) = say(state, "microphone mute on");
+        let (awake_only, _) = say(State::default(), "stay awake on");
+        let (both_active, mute_on_effects) = say(awake_only, "microphone mute on");
         assert!(
-            state.toggles().builtin_active(BuiltinMode::MicrophoneMute),
+            both_active.toggles().builtin_active(BuiltinMode::MicrophoneMute),
             "mic mute turns on"
         );
         assert!(
-            effects.contains(&Effect::ModeToggleChanged {
+            mute_on_effects.contains(&Effect::ModeToggleChanged {
                 owner: Owner::Builtin(BuiltinMode::MicrophoneMute),
                 name: "microphone mute".into(),
                 active: true,
             }),
             "mic mute emits ModeToggleChanged"
         );
-        let texts: Vec<_> = mode_segments(&state)
+        let both_texts: Vec<_> = mode_segments(&both_active)
             .into_iter()
             .map(|segment| segment.text)
             .collect();
-        assert_eq!(texts, vec!["Stay awake", "Microphone mute"]);
+        assert_eq!(both_texts, vec!["Stay awake", "Microphone mute"]);
 
-        let (state, effects) = say(state, "microphone mute off");
+        let (after_off, mute_off_effects) = say(both_active, "microphone mute off");
         assert!(
-            !state.toggles().builtin_active(BuiltinMode::MicrophoneMute),
+            !after_off.toggles().builtin_active(BuiltinMode::MicrophoneMute),
             "mic mute turns off"
         );
         assert!(
-            effects.contains(&Effect::ModeToggleChanged {
+            mute_off_effects.contains(&Effect::ModeToggleChanged {
                 owner: Owner::Builtin(BuiltinMode::MicrophoneMute),
                 name: "microphone mute".into(),
                 active: false,
             }),
             "mic mute off emits ModeToggleChanged"
         );
-        let texts: Vec<_> = mode_segments(&state)
+        let remaining_texts: Vec<_> = mode_segments(&after_off)
             .into_iter()
             .map(|segment| segment.text)
             .collect();
-        assert_eq!(texts, vec!["Stay awake"]);
+        assert_eq!(remaining_texts, vec!["Stay awake"]);
     }
 
     #[test]
     fn toggles_page_lists_every_mode_and_dpad_steps_while_confirm_flips() {
         let plugin_toggle = Toggle::new("night light", false).unwrap();
-        let (state, _) = run(State::default(), Input::PluginToggles(vec![(4, plugin_toggle)]));
-        let state = open_toggles_page(state);
+        let (seeded, _) = run(State::default(), Input::PluginToggles(vec![(4, plugin_toggle)]));
+        let opened = open_toggles_page(seeded);
 
-        let names: Vec<&str> = state
+        let names: Vec<&str> = opened
             .toggles()
             .items()
             .iter()
@@ -241,24 +244,24 @@ mod toggles {
             ["stay awake", "microphone mute", "do not disturb", "night light"]
         );
 
-        let (state, effects) = press(state, ButtonName::DpadRight);
-        assert_eq!(state.settings().toggles_focus, 1);
+        let (stepped, move_effects) = press(opened, ButtonName::DpadRight);
+        assert_eq!(stepped.settings().toggles_focus, 1);
         assert!(
-            !effects
+            !move_effects
                 .iter()
                 .any(|effect| matches!(effect, Effect::ModeToggleChanged { .. })),
             "moving focus never flips a toggle"
         );
 
-        let state = press(press(state, ButtonName::DpadRight).0, ButtonName::DpadRight).0;
-        assert_eq!(state.settings().toggles_focus, 3);
-        let (state, effects) = press(state, ButtonName::South);
+        let on_plugin = press(press(stepped, ButtonName::DpadRight).0, ButtonName::DpadRight).0;
+        assert_eq!(on_plugin.settings().toggles_focus, 3);
+        let (flipped_on, flip_effects) = press(on_plugin, ButtonName::South);
         assert!(
-            state.toggles().is_active("night light"),
+            flipped_on.toggles().is_active("night light"),
             "confirm flips plugin toggle on"
         );
         assert!(
-            effects.contains(&Effect::ModeToggleChanged {
+            flip_effects.contains(&Effect::ModeToggleChanged {
                 owner: Owner::Plugin(4),
                 name: "night light".into(),
                 active: true,
@@ -266,94 +269,98 @@ mod toggles {
             "plugin toggle on emits ModeToggleChanged"
         );
         assert_eq!(
-            mode_segments(&state),
+            mode_segments(&flipped_on),
             vec![Segment {
                 text: "Night light".into(),
                 tone: Tone::Mode,
             }]
         );
 
-        let (state, _) = press(state, ButtonName::South);
+        let (flipped_off, _) = press(flipped_on, ButtonName::South);
         assert!(
-            !state.toggles().is_active("night light"),
+            !flipped_off.toggles().is_active("night light"),
             "confirm flips plugin toggle off"
         );
-        assert!(mode_segments(&state).is_empty(), "chip disappears when off");
+        assert!(mode_segments(&flipped_off).is_empty(), "chip disappears when off");
     }
 
     #[test]
     fn late_arriving_plugin_toggles_join_end_without_moving_focus() {
         let first = Toggle::new("night light", false).unwrap();
-        let (state, _) = run(State::default(), Input::PluginToggles(vec![(4, first.clone())]));
-        let mut state = open_toggles_page(state);
+        let (seeded, _) = run(State::default(), Input::PluginToggles(vec![(4, first.clone())]));
+        let mut opened = open_toggles_page(seeded);
         for _ in 0..3 {
-            state = press(state, ButtonName::DpadRight).0;
+            opened = press(opened, ButtonName::DpadRight).0;
         }
-        assert_eq!(state.settings().toggles_focus, 3);
+        assert_eq!(opened.settings().toggles_focus, 3);
         let late = Toggle::new("stream mode", true).unwrap();
-        let (state, _) = run(state, Input::PluginToggles(vec![(4, first), (7, late)]));
-        assert_eq!(state.settings().toggles_focus, 3);
-        assert_eq!(state.toggles().get(3).unwrap().name, "night light");
-        assert_eq!(state.toggles().get(4).unwrap().name, "stream mode");
+        let (updated, _) = run(opened, Input::PluginToggles(vec![(4, first), (7, late)]));
+        assert_eq!(updated.settings().toggles_focus, 3);
+        assert_eq!(updated.toggles().get(3).unwrap().name, "night light");
+        assert_eq!(updated.toggles().get(4).unwrap().name, "stream mode");
     }
 
     #[test]
     fn focusing_an_active_bar_chip_and_pressing_confirm_turns_it_off() {
-        let (state, _) = say(State::default(), "stay awake on");
-        let (state, _) = say(state, "do not disturb on");
+        let (with_awake, _) = say(State::default(), "stay awake on");
+        let (with_both, _) = say(with_awake, "do not disturb on");
 
-        let (state, _) = press(state, ButtonName::Guide);
-        assert_eq!(state.core().level(), Level::Columns);
-        assert_eq!(state.bar_chip_focus(), None);
+        let (columns, _) = press(with_both, ButtonName::Guide);
+        assert_eq!(columns.core().level(), Level::Columns);
+        assert_eq!(columns.bar_chip_focus(), None);
 
-        let (state, _) = press(state, ButtonName::DpadDown);
-        assert_eq!(state.bar_chip_focus(), Some(0));
-        assert_eq!(mode_segments(&state)[0].tone, Tone::ModeFocused);
-        assert_eq!(mode_segments(&state)[1].tone, Tone::Mode);
+        let (focused_first, _) = press(columns, ButtonName::DpadDown);
+        assert_eq!(focused_first.bar_chip_focus(), Some(0));
+        assert_eq!(mode_segments(&focused_first)[0].tone, Tone::ModeFocused);
+        assert_eq!(mode_segments(&focused_first)[1].tone, Tone::Mode);
 
-        let (state, _) = press(state, ButtonName::DpadRight);
-        assert_eq!(state.bar_chip_focus(), Some(1));
-        assert_eq!(mode_segments(&state)[1].tone, Tone::ModeFocused);
+        let (focused_second, _) = press(focused_first, ButtonName::DpadRight);
+        assert_eq!(focused_second.bar_chip_focus(), Some(1));
+        assert_eq!(mode_segments(&focused_second)[1].tone, Tone::ModeFocused);
 
-        let (state, effects) = press(state, ButtonName::South);
+        let (after_first_off, first_off_effects) = press(focused_second, ButtonName::South);
         assert!(
-            !state.toggles().builtin_active(BuiltinMode::DoNotDisturb),
+            !after_first_off
+                .toggles()
+                .builtin_active(BuiltinMode::DoNotDisturb),
             "confirm turns focused chip off"
         );
         assert!(
-            state.toggles().builtin_active(BuiltinMode::StayAwake),
+            after_first_off.toggles().builtin_active(BuiltinMode::StayAwake),
             "other active chip stays on"
         );
         assert!(
-            effects.contains(&Effect::ModeToggleChanged {
+            first_off_effects.contains(&Effect::ModeToggleChanged {
                 owner: Owner::Builtin(BuiltinMode::DoNotDisturb),
                 name: "do not disturb".into(),
                 active: false,
             }),
             "turning off focused chip emits ModeToggleChanged"
         );
-        assert_eq!(state.bar_chip_focus(), Some(0));
+        assert_eq!(after_first_off.bar_chip_focus(), Some(0));
 
-        let (state, effects) = press(state, ButtonName::South);
+        let (after_last_off, last_off_effects) = press(after_first_off, ButtonName::South);
         assert!(
-            !state.toggles().builtin_active(BuiltinMode::StayAwake),
+            !after_last_off.toggles().builtin_active(BuiltinMode::StayAwake),
             "confirm turns last chip off"
         );
-        assert_eq!(state.bar_chip_focus(), None);
-        assert!(mode_segments(&state).is_empty(), "all active chips gone");
+        assert_eq!(after_last_off.bar_chip_focus(), None);
+        assert!(mode_segments(&after_last_off).is_empty(), "all active chips gone");
         assert!(
-            !effects.iter().any(|effect| matches!(effect, Effect::Apply(_))),
+            !last_off_effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Apply(_))),
             "bar chip confirm never leaks Enter to the app"
         );
     }
 
     #[test]
     fn guide_dpad_chord_still_moves_columns_even_with_active_mode_chips() {
-        let (state, _) = say(State::default(), "stay awake on");
-        let (state, _) = press(state, ButtonName::Guide);
-        assert_eq!(state.core().level(), Level::Columns);
-        let (state, _) = run(
-            state,
+        let (with_awake, _) = say(State::default(), "stay awake on");
+        let (columns, _) = press(with_awake, ButtonName::Guide);
+        assert_eq!(columns.core().level(), Level::Columns);
+        let (guide_down, _) = run(
+            columns,
             Input::Event {
                 event: Event::Button {
                     name: ButtonName::Guide,
@@ -362,10 +369,10 @@ mod toggles {
                 elapsed: Duration::ZERO,
             },
         );
-        let (state, effects) = press(state, ButtonName::DpadDown);
-        assert_eq!(state.bar_chip_focus(), None);
+        let (after_chord, chord_effects) = press(guide_down, ButtonName::DpadDown);
+        assert_eq!(after_chord.bar_chip_focus(), None);
         assert!(
-            effects.contains(&Effect::Apply(Action::Layout {
+            chord_effects.contains(&Effect::Apply(Action::Layout {
                 action: LayoutAction::MoveColumnToWorkspaceDown,
             })),
             "Guide+D-pad chord still moves columns"
@@ -375,24 +382,27 @@ mod toggles {
     #[test]
     fn plugin_exit_clears_its_toggles_and_active_bar_chips() {
         let toggle = Toggle::new("night light", true).unwrap();
-        let (state, _) = run(State::default(), Input::PluginToggles(vec![(2, toggle)]));
+        let (registered, _) = run(State::default(), Input::PluginToggles(vec![(2, toggle)]));
         assert_eq!(
-            mode_segments(&state),
+            mode_segments(&registered),
             vec![Segment {
                 text: "Night light".into(),
                 tone: Tone::Mode,
             }]
         );
-        let (state, _) = run(state, Input::PluginExited { plugin: 2 });
+        let (after_exit, _) = run(registered, Input::PluginExited { plugin: 2 });
         assert!(
-            !state.toggles().is_active("night light"),
+            !after_exit.toggles().is_active("night light"),
             "exited plugin toggle is removed"
         );
-        assert!(mode_segments(&state).is_empty(), "exited plugin chip disappears");
+        assert!(
+            mode_segments(&after_exit).is_empty(),
+            "exited plugin chip disappears"
+        );
     }
 
-    #[derive(Debug, Clone)]
-    enum StepOp {
+    #[derive(Debug, Clone, Copy)]
+    enum StepAction {
         Voice(usize, bool),
         OpenAndFlip(usize),
         ToggleLevel,
@@ -403,48 +413,48 @@ mod toggles {
         SyncPlugin(bool),
     }
 
-    fn op_strategy() -> impl Strategy<Value = StepOp> {
+    fn action_strategy() -> impl Strategy<Value = StepAction> {
         prop_oneof![
-            (0usize..4, any::<bool>()).prop_map(|(index, on)| StepOp::Voice(index, on)),
-            (0usize..4).prop_map(StepOp::OpenAndFlip),
-            Just(StepOp::ToggleLevel),
-            Just(StepOp::FocusBar),
-            any::<bool>().prop_map(StepOp::StepBar),
-            Just(StepOp::TurnOffFocusedChip),
-            Just(StepOp::ExitBar),
-            any::<bool>().prop_map(StepOp::SyncPlugin),
+            (0usize..4, any::<bool>()).prop_map(|(index, enable)| StepAction::Voice(index, enable)),
+            (0usize..4).prop_map(StepAction::OpenAndFlip),
+            Just(StepAction::ToggleLevel),
+            Just(StepAction::FocusBar),
+            any::<bool>().prop_map(StepAction::StepBar),
+            Just(StepAction::TurnOffFocusedChip),
+            Just(StepAction::ExitBar),
+            any::<bool>().prop_map(StepAction::SyncPlugin),
         ]
     }
 
-    fn apply_op(state: State, op: StepOp) -> State {
+    fn apply_action(state: State, action: StepAction) -> State {
         let names = ["stay awake", "microphone mute", "do not disturb", "night light"];
-        match op {
-            StepOp::Voice(index, on) => {
-                let phrase = format!("{} {}", names[index], if on { "on" } else { "off" });
+        match action {
+            StepAction::Voice(index, enable) => {
+                let phrase = format!("{} {}", names[index], if enable { "on" } else { "off" });
                 say(state, &phrase).0
             }
-            StepOp::OpenAndFlip(index) => {
-                let mut next = if state.settings().open {
+            StepAction::OpenAndFlip(index) => {
+                let mut current = if state.settings().open {
                     state
                 } else {
                     open_toggles_page(state)
                 };
-                if next.settings().page == Page::Toggles {
+                if current.settings().page == Page::Toggles {
                     for _ in 0..4 {
-                        next = press(next, ButtonName::DpadLeft).0;
+                        current = press(current, ButtonName::DpadLeft).0;
                     }
                     for _ in 0..index {
-                        next = press(next, ButtonName::DpadRight).0;
+                        current = press(current, ButtonName::DpadRight).0;
                     }
-                    next = press(next, ButtonName::South).0;
-                    next = press(next, ButtonName::East).0;
-                    next = press(next, ButtonName::East).0;
+                    current = press(current, ButtonName::South).0;
+                    current = press(current, ButtonName::East).0;
+                    current = press(current, ButtonName::East).0;
                 }
-                next
+                current
             }
-            StepOp::ToggleLevel => press(state, ButtonName::Guide).0,
-            StepOp::FocusBar => press(state, ButtonName::DpadDown).0,
-            StepOp::StepBar(right) => {
+            StepAction::ToggleLevel => press(state, ButtonName::Guide).0,
+            StepAction::FocusBar => press(state, ButtonName::DpadDown).0,
+            StepAction::StepBar(right) => {
                 press(
                     state,
                     if right {
@@ -455,9 +465,9 @@ mod toggles {
                 )
                 .0
             }
-            StepOp::TurnOffFocusedChip => press(state, ButtonName::South).0,
-            StepOp::ExitBar => press(state, ButtonName::East).0,
-            StepOp::SyncPlugin(present) => {
+            StepAction::TurnOffFocusedChip => press(state, ButtonName::South).0,
+            StepAction::ExitBar => press(state, ButtonName::East).0,
+            StepAction::SyncPlugin(present) => {
                 let list = if present {
                     vec![(1, Toggle::new("night light", false).unwrap())]
                 } else {
@@ -470,10 +480,12 @@ mod toggles {
 
     proptest! {
         #[test]
-        fn bar_chips_always_match_active_modes_and_voice_names(ops in prop::collection::vec(op_strategy(), 1..40)) {
+        fn bar_chips_always_match_active_modes_and_voice_names(
+            actions in prop::collection::vec(action_strategy(), 1..40),
+        ) {
             let mut state = State::default();
-            for op in ops {
-                state = apply_op(state, op);
+            for action in actions {
+                state = apply_action(state, action);
                 let active: Vec<&str> = state
                     .toggles()
                     .active_items()

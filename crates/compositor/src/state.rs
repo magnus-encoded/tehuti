@@ -4892,11 +4892,10 @@ impl Compositor {
                     tracing::warn!(%error, "volume write failed");
                     self.show_notice("VOLUME UNAVAILABLE");
                 }
-                crate::volume::Reply::Set(Ok(())) => {}
+                crate::volume::Reply::Set(Ok(())) | crate::volume::Reply::MicMute(Ok(())) => {}
                 crate::volume::Reply::MicMute(Err(error)) => {
                     tracing::warn!(%error, "microphone mute failed");
                 }
-                crate::volume::Reply::MicMute(Ok(())) => {}
             }
         }
     }
@@ -4956,7 +4955,7 @@ impl Compositor {
         }
     }
 
-    fn poll_idle_inhibit(&mut self) {
+    fn poll_idle_inhibit(&self) {
         let replies: Vec<_> = self
             .idle_inhibit
             .as_ref()
