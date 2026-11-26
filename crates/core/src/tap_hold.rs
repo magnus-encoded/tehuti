@@ -78,19 +78,8 @@ impl<Key: Copy + Eq> TapHold<Key> {
                 .chain(modifiers.iter().rev().copied().map(|code| (code, false)))
                 .collect();
         };
-        let mut events = Vec::new();
+        let mut events = self.release_stale_modifiers(modifiers);
         let epoch = self.focus_epoch;
-        let stale_modifier = self
-            .held_taps
-            .iter()
-            .any(|held| held.epoch == epoch && held.modifier && !modifiers.contains(&held.code));
-        if stale_modifier {
-            events.extend(
-                self.release(|held| {
-                    held.epoch == epoch && (!held.modifier || !modifiers.contains(&held.code))
-                }),
-            );
-        }
         for code in modifiers {
             if let Some(held) = self.held_taps.iter_mut().find(|held| held.code == *code) {
                 held.due = due;
@@ -167,6 +156,19 @@ impl<Key: Copy + Eq> TapHold<Key> {
         let epoch = self.focus_epoch;
         // Wrapping comparison: a held epoch is older when the distance is positive as i32.
         self.release(|held| epoch.wrapping_sub(held.epoch).cast_signed() > 0)
+    }
+
+    /// Releases same-epoch held keys and modifiers whenever a held modifier is absent from `modifiers`.
+    fn release_stale_modifiers(&mut self, modifiers: &[Key]) -> Vec<(Key, bool)> {
+        let epoch = self.focus_epoch;
+        let stale = self
+            .held_taps
+            .iter()
+            .any(|held| held.epoch == epoch && held.modifier && !modifiers.contains(&held.code));
+        if !stale {
+            return Vec::new();
+        }
+        self.release(|held| held.epoch == epoch && (!held.modifier || !modifiers.contains(&held.code)))
     }
 
     fn release(&mut self, selected: impl Fn(&HeldKey<Key>) -> bool) -> Vec<(Key, bool)> {

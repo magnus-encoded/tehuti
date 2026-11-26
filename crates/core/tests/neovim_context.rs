@@ -109,6 +109,14 @@ mod neovim_context {
         }
     }
 
+    fn split_move(direction: KeyName) -> Vec<Action> {
+        vec![
+            key(KeyName::Escape),
+            chord(KeyName::W, vec![Modifier::Ctrl]),
+            key(direction),
+        ]
+    }
+
     #[test]
     fn controller_buttons_step_buffers_splits_and_search_matches() {
         let state = focused_neovim();
@@ -121,38 +129,10 @@ mod neovim_context {
                 ButtonName::RightBumper,
                 vec![key(KeyName::Escape), text(":bnext"), key(KeyName::Enter)],
             ),
-            (
-                ButtonName::DpadLeft,
-                vec![
-                    key(KeyName::Escape),
-                    chord(KeyName::W, vec![Modifier::Ctrl]),
-                    key(KeyName::H),
-                ],
-            ),
-            (
-                ButtonName::DpadDown,
-                vec![
-                    key(KeyName::Escape),
-                    chord(KeyName::W, vec![Modifier::Ctrl]),
-                    key(KeyName::J),
-                ],
-            ),
-            (
-                ButtonName::DpadUp,
-                vec![
-                    key(KeyName::Escape),
-                    chord(KeyName::W, vec![Modifier::Ctrl]),
-                    key(KeyName::K),
-                ],
-            ),
-            (
-                ButtonName::DpadRight,
-                vec![
-                    key(KeyName::Escape),
-                    chord(KeyName::W, vec![Modifier::Ctrl]),
-                    key(KeyName::L),
-                ],
-            ),
+            (ButtonName::DpadLeft, split_move(KeyName::H)),
+            (ButtonName::DpadDown, split_move(KeyName::J)),
+            (ButtonName::DpadUp, split_move(KeyName::K)),
+            (ButtonName::DpadRight, split_move(KeyName::L)),
             (ButtonName::West, vec![key(KeyName::Escape), key(KeyName::N)]),
             (
                 ButtonName::LeftTrigger,

@@ -360,11 +360,7 @@ impl Entry {
     }
 
     fn new_actions(trigger: Vec<Piece>, actions: &[Action], icon: Option<&str>) -> Self {
-        let default_icon = match actions {
-            [single] => built_in_icon(single),
-            _ => None,
-        };
-        let result = icon.or(default_icon).map_or_else(
+        let result = icon.or_else(|| default_icon(actions)).map_or_else(
             || actions_pieces(actions),
             |icon| {
                 vec![Piece::Icon {
@@ -638,6 +634,26 @@ fn chord_pieces(chord: &[ButtonName], pad: PadFamily) -> Vec<Piece> {
     pieces
 }
 
+fn default_icon(actions: &[Action]) -> Option<&'static str> {
+    match actions {
+        [single] => built_in_icon(single),
+        _ => None,
+    }
+}
+
+fn format_speech_trigger(phrases: &[String]) -> String {
+    let mut trigger = phrases
+        .iter()
+        .take(PHRASES_SHOWN)
+        .map(|phrase| format!("\"{phrase}\""))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    if phrases.len() > PHRASES_SHOWN {
+        trigger.push_str(" /\u{2026}");
+    }
+    trigger
+}
+
 fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: TickerSpeech) -> Vec<Entry> {
     if shown == TickerSpeech::None {
         return Vec::new();
@@ -654,11 +670,7 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
             if !seen.insert(normalize_phrase(mapping.phrase)) {
                 continue;
             }
-            let default_icon = match mapping.actions.as_slice() {
-                [single] => built_in_icon(single),
-                _ => None,
-            };
-            let icon = mapping.icon.or(default_icon);
+            let icon = mapping.icon.or_else(|| default_icon(&mapping.actions));
             if shown == TickerSpeech::Icons && icon.is_none() {
                 continue;
             }
@@ -690,16 +702,11 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
     groups
         .into_iter()
         .map(|(actions, icon, phrases)| {
-            let mut trigger = phrases
-                .iter()
-                .take(PHRASES_SHOWN)
-                .map(|phrase| format!("\"{phrase}\""))
-                .collect::<Vec<_>>()
-                .join(" / ");
-            if phrases.len() > PHRASES_SHOWN {
-                trigger.push_str(" /\u{2026}");
-            }
-            Entry::new_actions(vec![Piece::Text(trigger)], &actions, icon.as_deref())
+            Entry::new_actions(
+                vec![Piece::Text(format_speech_trigger(&phrases))],
+                &actions,
+                icon.as_deref(),
+            )
         })
         .collect()
 }
