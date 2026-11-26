@@ -629,6 +629,16 @@ impl State {
         self.bar.keyboard_feedback(text);
     }
 
+    /// Shows a completed spoken adjustment unit on the bar.
+    pub(crate) fn bar_result(&mut self, text: &str) {
+        self.bar.keyboard_feedback(text);
+    }
+
+    /// Drops a waiting "Transcribing…" or "Resolving…" segment when a core adjuster takes the phrase.
+    pub(crate) fn clear_bar_waiting(&mut self) {
+        self.bar.clear_waiting();
+    }
+
     /// What the shoulder buttons currently drive.
     #[must_use]
     pub const fn level(&self) -> Level {
@@ -998,6 +1008,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         }
         let phrase = text.as_str();
         if unit_verbs::launcher_request(phrase).is_some()
+            || adjuster::parse_brightness_phrase(phrase).is_some()
             || matches!(
                 tehuti_protocol::normalize_phrase(phrase).as_str(),
                 "start recording" | "stop recording"

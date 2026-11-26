@@ -346,9 +346,11 @@ for line in sys.stdin:
             | Effect::LauncherUsed(_)
             | Effect::OpenLauncher(_)
             | Effect::ReadVolume
+            | Effect::ReadBrightness
             | Effect::ReadWindowSize(_)
             | Effect::SetWindowSize { .. }
             | Effect::SetVolume(_)
+            | Effect::SetBrightness(_)
             | Effect::AdjusterValue { .. }
             | Effect::RunMenuCommand(_)
             | Effect::SettingsMode(_)

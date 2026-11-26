@@ -12,6 +12,10 @@ mod reserved_speech {
             "work on notes",
             "Start recording.",
             "STOP RECORDING!",
+            "brightness",
+            "Brightness 40",
+            "brightness maximum",
+            "brightness minimum",
         ] {
             let (_, actions) = tehuti_core::step(
                 tehuti_core::State::default(),

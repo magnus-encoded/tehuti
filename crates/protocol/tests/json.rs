@@ -139,6 +139,7 @@ mod adjuster_tests {
             r#"{"name":"contrast","minimum":10,"maximum":0,"value":5}"#,
             r#"{"name":"contrast","minimum":0,"maximum":100,"value":101}"#,
             r#"{"name":"volume","minimum":0,"maximum":100,"value":50}"#,
+            r#"{"name":"brightness","minimum":0,"maximum":100,"value":50}"#,
             r#"{"name":"","minimum":0,"maximum":100,"value":50}"#,
         ] {
             assert!(serde_json::from_str::<tehuti_protocol::Adjuster>(registration).is_err());
