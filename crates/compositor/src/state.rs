@@ -149,6 +149,9 @@ pub struct Compositor {
     injected_clock: Option<InjectedClock>,
     driver_clock: crate::driver::Clock,
     driver_elapsed: core::time::Duration,
+    pub(crate) control_inputs: std::collections::VecDeque<crate::ctl::Event>,
+    pub(crate) control_sequence: u64,
+    pub(crate) keyboard_inputs: std::collections::BTreeMap<String, u64>,
     dim_elapsed: core::time::Duration,
     focus_outline_ids: [smithay::backend::renderer::element::Id; 4],
     step_mark_ids: [smithay::backend::renderer::element::Id; 4],
@@ -319,6 +322,9 @@ impl Compositor {
             injected_clock: None,
             driver_clock: crate::driver::Clock::Live,
             driver_elapsed: core::time::Duration::ZERO,
+            control_inputs: std::collections::VecDeque::new(),
+            control_sequence: 0,
+            keyboard_inputs: std::collections::BTreeMap::new(),
             previous_tick: Instant::now(),
             dim_elapsed: core::time::Duration::ZERO,
             focus_outline_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
@@ -1712,6 +1718,8 @@ impl Compositor {
             self.close_invitation_written = crate::timeline_level::CloseWritten::Not;
             self.record_debug("input", &input);
         }
+        self.observe_control_input(&input);
+        let keyboard_was_open = self.dispatch.keyboard().is_open();
         let elapsed = dispatch_elapsed(&input);
         self.advance_clocks(elapsed);
         let level = self.dispatch.core().level();
@@ -1738,6 +1746,9 @@ impl Compositor {
                 }
             }
             if self.dispatch.busy() <= depth {
+                if keyboard_was_open && !self.dispatch.keyboard().is_open() {
+                    self.finish_control_keyboard();
+                }
                 self.finish_dispatch_view(level);
                 return rejection;
             }

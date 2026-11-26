@@ -73,10 +73,26 @@ pub enum Command {
     SessionRestart,
 }
 
-/// Only session state can enter the public event stream.
+/// Session state, pad usage and count-only keyboard summaries.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Event {
+    Button {
+        sequence: u64,
+        name: tehuti_protocol::ButtonName,
+        state: tehuti_protocol::ButtonState,
+    },
+    Sticks {
+        sequence: u64,
+        left: (i16, i16),
+        right: (i16, i16),
+    },
+    KeyboardSummary {
+        sequence: u64,
+        inputs: std::collections::BTreeMap<String, u64>,
+        character_edits: u64,
+        word_edits: u64,
+    },
     Focus {
         #[serde(rename = "id")]
         identity: Option<u64>,

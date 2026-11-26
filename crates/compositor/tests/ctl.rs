@@ -279,7 +279,7 @@ mod tests {
         clippy::too_many_lines,
         reason = "one integration scenario owns the isolated session and its cleanup"
     )]
-    fn pad_and_on_screen_keyboard_input_produces_no_control_event() {
+    fn pad_input_is_streamed_and_keyboard_input_yields_only_a_summary() {
         let directory = tempfile::tempdir().unwrap();
         let display =
             smithay::reexports::wayland_server::Display::<tehuti::state::Compositor>::new().unwrap();
@@ -306,12 +306,14 @@ mod tests {
                 },
             )
             .unwrap();
-        assert_eq!(
-            compositor
-                .control(tehuti::ctl::Command::Events, directory.path())
-                .unwrap(),
-            initial
-        );
+        let outside = compositor
+            .control(tehuti::ctl::Command::Events, directory.path())
+            .unwrap();
+        let outside_events = outside.as_array().unwrap();
+        assert_eq!(outside_events.len(), initial.as_array().unwrap().len() + 3);
+        assert_eq!(outside_events[outside_events.len() - 3]["kind"], "button");
+        assert_eq!(outside_events[outside_events.len() - 2]["kind"], "button");
+        assert_eq!(outside_events[outside_events.len() - 1]["kind"], "sticks");
         let _keyboard_open = driver
             .execute(
                 &mut compositor,
@@ -332,6 +334,33 @@ mod tests {
                 .execute(&mut compositor, tehuti::driver::Request::Press { button })
                 .unwrap();
         }
+        for _ in 0..2 {
+            let _layer = driver
+                .execute(
+                    &mut compositor,
+                    tehuti::driver::Request::Press {
+                        button: tehuti_protocol::ButtonName::LeftStick,
+                    },
+                )
+                .unwrap();
+        }
+        let _word = driver
+            .execute(
+                &mut compositor,
+                tehuti::driver::Request::Stick {
+                    left: (-1000, 0),
+                    right: (0, 0),
+                },
+            )
+            .unwrap();
+        let _delete_word = driver
+            .execute(
+                &mut compositor,
+                tehuti::driver::Request::Press {
+                    button: tehuti_protocol::ButtonName::West,
+                },
+            )
+            .unwrap();
         let _text_entry = driver
             .execute(
                 &mut compositor,
@@ -346,7 +375,30 @@ mod tests {
                 .unwrap(),
             opened
         );
-        for kind in ["button", "sticks", "key", "text", "speech"] {
+        let _close = driver
+            .execute(
+                &mut compositor,
+                tehuti::driver::Request::Press {
+                    button: tehuti_protocol::ButtonName::East,
+                },
+            )
+            .unwrap();
+        assert!(!compositor.on_screen_keyboard().is_open());
+        let closed = compositor
+            .control(tehuti::ctl::Command::Events, directory.path())
+            .unwrap();
+        let closed_events = closed.as_array().unwrap();
+        assert_eq!(closed_events.len(), opened.as_array().unwrap().len() + 1);
+        assert_eq!(
+            closed_events.last().unwrap(),
+            &json!({
+                "kind": "keyboard_summary", "sequence": 4,
+                "inputs": {"letters": 10, "capitals": 0, "symbols": 2},
+                "character_edits": 1, "word_edits": 1,
+            })
+        );
+        assert!(!closed.to_string().contains("private test text"));
+        for kind in ["key", "text", "speech"] {
             assert!(serde_json::from_value::<tehuti::ctl::Event>(json!({"kind": kind})).is_err());
         }
     }

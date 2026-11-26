@@ -188,6 +188,86 @@ impl Compositor {
         Ok(json!({}))
     }
 
+    pub(crate) fn observe_control_input(&mut self, input: &tehuti_core::dispatch::Input) {
+        use tehuti_core::dispatch::Input;
+        let pad = matches!(
+            input,
+            Input::Event {
+                event: tehuti_protocol::Event::Button { .. },
+                ..
+            } | Input::Sticks(_)
+        );
+        if !pad {
+            return;
+        }
+        let keyboard = self.on_screen_keyboard();
+        if keyboard.is_open() {
+            let layer = if keyboard.symbols() {
+                "symbols"
+            } else if keyboard.shifted() {
+                "capitals"
+            } else {
+                "letters"
+            };
+            let count = self.keyboard_inputs.entry(layer.into()).or_default();
+            *count = count.saturating_add(1);
+            return;
+        }
+        if let Input::Event {
+            event: tehuti_protocol::Event::Button { name, .. },
+            ..
+        } = input
+            && keyboard.holds(*name)
+        {
+            return;
+        }
+        let sequence = self.next_control_sequence();
+        let event = match input {
+            Input::Event {
+                event: tehuti_protocol::Event::Button { name, state },
+                ..
+            } => crate::ctl::Event::Button {
+                sequence,
+                name: *name,
+                state: *state,
+            },
+            Input::Sticks(sticks) => crate::ctl::Event::Sticks {
+                sequence,
+                left: sticks.left,
+                right: sticks.right,
+            },
+            _ => return,
+        };
+        self.push_control_input(event);
+    }
+
+    fn next_control_sequence(&mut self) -> u64 {
+        self.control_sequence = self.control_sequence.saturating_add(1);
+        self.control_sequence
+    }
+
+    fn push_control_input(&mut self, event: crate::ctl::Event) {
+        if self.control_inputs.len() == 256 {
+            self.control_inputs.pop_front();
+        }
+        self.control_inputs.push_back(event);
+    }
+
+    pub(crate) fn finish_control_keyboard(&mut self) {
+        let (character_edits, word_edits) = self.on_screen_keyboard().edit_counts();
+        let sequence = self.next_control_sequence();
+        let mut inputs = core::mem::take(&mut self.keyboard_inputs);
+        for layer in ["letters", "capitals", "symbols"] {
+            inputs.entry(layer.into()).or_default();
+        }
+        self.push_control_input(crate::ctl::Event::KeyboardSummary {
+            sequence,
+            inputs,
+            character_edits,
+            word_edits,
+        });
+    }
+
     fn control_events(&self) -> Vec<crate::ctl::Event> {
         use crate::ctl::Event;
         let mut events = vec![Event::Focus {
@@ -226,6 +306,7 @@ impl Compositor {
         if let Some(text) = self.visible_notice_text() {
             events.push(Event::Notice { text });
         }
+        events.extend(self.control_inputs.iter().cloned());
         events
     }
 

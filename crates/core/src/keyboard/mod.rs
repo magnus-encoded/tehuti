@@ -551,6 +551,7 @@ pub struct Keyboard {
     pad_family: crate::pad::PadFamily,
     open: bool,
     edits: Vec<Edit>,
+    edit_counts: (u64, u64),
     mode: DraftMode,
     field_kind: FieldKind,
     app: AppKind,
@@ -732,7 +733,17 @@ impl Keyboard {
         core::mem::take(&mut self.edits)
     }
 
+    /// Character edits and picked-word edits in the current session.
+    pub const fn edit_counts(&self) -> (u64, u64) {
+        self.edit_counts
+    }
+
     fn record_edit(&mut self, range: Range<usize>, text: &str) {
+        if self.word.is_some() {
+            self.edit_counts.1 = self.edit_counts.1.saturating_add(1);
+        } else {
+            self.edit_counts.0 = self.edit_counts.0.saturating_add(1);
+        }
         if let Some(anchor) = self.application_anchor() {
             let start = self.caret.min(anchor);
             let end = self.caret.max(anchor);
@@ -1288,8 +1299,9 @@ impl Keyboard {
 
     fn backspace(&mut self) {
         self.revealed = None;
-        if let Some(word) = self.word.take() {
+        if let Some(word) = self.word.clone() {
             self.record_edit(word.clone(), "");
+            self.word = None;
             self.draft.replace_range(word.clone(), "");
             self.caret = word.start;
             return;
