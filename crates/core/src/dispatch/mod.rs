@@ -25,6 +25,9 @@ pub use settings::{Category, Page, Settings};
 mod adjustment;
 use adjustment::{adjuster_effect, adjuster_input, adjuster_phrase, adjuster_sticks, remember_adjuster};
 
+mod sound;
+use sound::{apply_microphone_mute, apply_mute, apply_output_selected, sound_chord, sound_phrase};
+
 mod mouse;
 pub use mouse::{PointerButton, Sticks};
 
@@ -38,6 +41,12 @@ pub enum Input {
     /// Closes the session-start invitation once a window exists.
     CloseInvitation,
     Volume(Option<u8>),
+    /// Reply to [`Effect::SetMute`] or [`Effect::ToggleMute`]: whether the sink is muted.
+    AudioMuted(Option<bool>),
+    /// Reply to [`Effect::SetMicrophoneMute`] or [`Effect::ToggleMicrophoneMute`].
+    MicrophoneMuted(Option<bool>),
+    /// Reply to [`Effect::NextAudioOutput`] or [`Effect::SelectAudioOutput`].
+    AudioOutputSelected(Result<crate::sound::AudioOutput, String>),
     /// Reply to [`Effect::ReadWindowSize`]: the focused window's size in millionths of the screen.
     WindowSize(Option<u32>),
     Adjusters(Vec<(usize, tehuti_protocol::Adjuster)>),
@@ -151,6 +160,18 @@ pub enum Effect {
         millionths: u32,
     },
     SetVolume(u8),
+    /// Sets default audio sink mute state ("mute" / "unmute").
+    SetMute(bool),
+    /// Toggles default audio sink mute (`Guide + West`).
+    ToggleMute,
+    /// Sets default audio source mute state ("microphone mute" / "microphone on").
+    SetMicrophoneMute(bool),
+    /// Toggles default audio source mute (`Guide + North`).
+    ToggleMicrophoneMute,
+    /// Cycles to the next audio output (`Guide + East`).
+    NextAudioOutput,
+    /// Switches to the audio output matching a spoken name ("speaker <name>").
+    SelectAudioOutput(String),
     PasswordSpeechIgnored,
     RunMenuCommand(crate::menu::Command),
     SettingsMode(usize),
@@ -664,13 +685,29 @@ fn routed_step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             released.push(adjuster_effect(&gauge, true));
         }
     }
+    let depth = state.frames.len();
+    let is_reply = matches!(
+        input,
+        Input::ClockRead(_)
+            | Input::PluginActive(_)
+            | Input::PluginRequest(_)
+            | Input::Supervised(_)
+            | Input::SecretConfirmation(_)
+            | Input::SpeechSent(_)
+            | Input::SpeechPolled(_)
+            | Input::Resume
+    );
     let (mut state, mut routed) = step_input(state, input);
     let mut effects = released;
     effects.append(&mut routed);
     release_on_open(&mut state, &mut effects);
     release_passthrough_overlays(&mut state, &mut effects);
     state.overlay_stack = open_overlays(&state);
-    run(state, effects)
+    if (is_reply && state.frames.len() == depth) || state.frames.len() > depth {
+        run(state, effects)
+    } else {
+        (state, effects)
+    }
 }
 
 /// Applies the focused context’s draft retention and terminal layout.
@@ -729,6 +766,18 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             (state, Vec::new())
         }
         Input::Volume(value) => (volume_read(state, value), Vec::new()),
+        Input::AudioMuted(muted) => {
+            apply_mute(&mut state, muted);
+            (state, Vec::new())
+        }
+        Input::MicrophoneMuted(muted) => {
+            apply_microphone_mute(&mut state, muted);
+            (state, Vec::new())
+        }
+        Input::AudioOutputSelected(result) => {
+            apply_output_selected(&mut state, result);
+            (state, Vec::new())
+        }
         Input::WindowSize(value) => (size_read(state, value), Vec::new()),
         Input::ChoiceList(slots) => {
             state.launcher = None;
@@ -800,6 +849,9 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::AudioMuted(_)
+        | Input::MicrophoneMuted(_)
+        | Input::AudioOutputSelected(_)
         | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
@@ -860,6 +912,9 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::AudioMuted(_)
+        | Input::MicrophoneMuted(_)
+        | Input::AudioOutputSelected(_)
         | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
@@ -904,6 +959,10 @@ fn run_tasks(mut state: State, tasks: Vec<Task>, effects: Vec<Effect>) -> (State
 }
 
 /// Inputs that only update the settings view.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive match over every input, updating settings only"
+)]
 fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {
@@ -941,6 +1000,9 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::AudioMuted(_)
+        | Input::MicrophoneMuted(_)
+        | Input::AudioOutputSelected(_)
         | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::Tick { .. }
@@ -1680,6 +1742,7 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
     sync_keyboard_config(state);
     let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
     if adjuster_phrase(state, event, dictation, effects)
+        || sound_phrase(state, event, dictation, effects)
         || settings_phrase(state, event, dictation, effects)
         || crate::menu_button_release(&mut state.core, event)
         || reserved_safety(state, event, dictation, effects)
@@ -1701,6 +1764,9 @@ fn settings_phrase(state: &mut State, event: &Event, dictation: bool, effects: &
 fn reserved_safety(state: &mut State, event: &Event, dictation: bool, effects: &mut Vec<Effect>) -> bool {
     if !dictation && emergency_button(state, event) {
         return system_menu(state, event, effects);
+    }
+    if !dictation && state.core.menu().is_none() && sound_chord(state, event, effects) {
+        return true;
     }
     if (dictation || state.core.menu().is_none()) && password_suppresses(state, event) {
         effects.push(Effect::PasswordSpeechIgnored);
@@ -1951,6 +2017,9 @@ fn passthrough_controller(state: &mut State, event: Event, effects: &mut Vec<Eff
             );
         }
     }
+    if sound_chord(state, &event, effects) {
+        return;
+    }
     if tool_word_input(state, &event, effects) {
         return;
     }
@@ -2046,7 +2115,10 @@ fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>)
         effects.push(Effect::Apply(release));
     }
     if state.core.passthrough() {
-        if adjuster_phrase(state, &event, false, effects) {
+        let dictation = state.keyboard.is_open() && matches!(event, Event::Speech { .. });
+        if adjuster_phrase(state, &event, dictation, effects)
+            || sound_phrase(state, &event, dictation, effects)
+        {
             return;
         }
         if !state.overlay_owns_pad() {

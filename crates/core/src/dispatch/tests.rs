@@ -97,6 +97,12 @@ impl World {
                     | Effect::ReadWindowSize(_)
                     | Effect::SetWindowSize { .. }
                     | Effect::SetVolume(_)
+                    | Effect::SetMute(_)
+                    | Effect::ToggleMute
+                    | Effect::SetMicrophoneMute(_)
+                    | Effect::ToggleMicrophoneMute
+                    | Effect::NextAudioOutput
+                    | Effect::SelectAudioOutput(_)
                     | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
                     | Effect::SettingsBarFont(_)

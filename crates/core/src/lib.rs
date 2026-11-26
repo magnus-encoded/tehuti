@@ -250,6 +250,14 @@ impl State {
         &self.bar
     }
 
+    pub(crate) const fn bar_mut(&mut self) -> &mut bar::Bar {
+        &mut self.bar
+    }
+
+    pub(crate) fn in_chord(&self, name: ButtonName) -> bool {
+        self.chord_buttons.contains(&name)
+    }
+
     pub fn capture(
         &mut self,
         state: speech::SpeechState,
@@ -807,7 +815,7 @@ const NO_MAPPING_NOTICE: &str = "NO SPEECH MAPPING";
 /// mapping, built-in or fuzzy match takes the phrase.
 #[must_use]
 pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<String>> {
-    if phrase.trim().is_empty() {
+    if phrase.trim().is_empty() || sound::is_reserved_phrase(phrase) {
         return None;
     }
     let focused = focused_context(state);
@@ -998,6 +1006,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         }
         let phrase = text.as_str();
         if unit_verbs::launcher_request(phrase).is_some()
+            || sound::is_reserved_phrase(phrase)
             || matches!(
                 tehuti_protocol::normalize_phrase(phrase).as_str(),
                 "start recording" | "stop recording"
@@ -1231,6 +1240,22 @@ fn guide_dpad(state: &mut State, name: ButtonName, button: ButtonState) -> Vec<A
     }
 }
 
+/// A sound button in a Guide chord: cancels Guide tap/menu and keeps its release in the chord.
+fn guide_sound_chord(state: &mut State, name: ButtonName, button: ButtonState) -> Vec<Action> {
+    state.guide_tap = None;
+    match button {
+        ButtonState::Pressed if !state.chord_buttons.contains(&name) => {
+            state.chord_buttons.push(name);
+            Vec::new()
+        }
+        ButtonState::Pressed => Vec::new(),
+        ButtonState::Released => {
+            state.chord_buttons.retain(|held| *held != name);
+            Vec::new()
+        }
+    }
+}
+
 fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     match event {
         Event::Button {
@@ -1244,6 +1269,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
                     Some(Vec::new())
                 }
                 Some(ownership::Why::GuideDpadChord) => Some(guide_dpad(state, *name, *button_state)),
+                Some(ownership::Why::GuideSoundChord) => Some(guide_sound_chord(state, *name, *button_state)),
                 _ if *name == ButtonName::Start => {
                     state.start_held = *button_state == ButtonState::Pressed;
                     if state.start_held {
@@ -1291,6 +1317,7 @@ pub mod secret_flow;
 pub mod secret_search;
 pub mod secret_test_store;
 pub mod shadowing;
+pub mod sound;
 pub mod speech;
 pub mod tool_words;
 pub mod unit_verbs;

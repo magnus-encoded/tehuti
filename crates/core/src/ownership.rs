@@ -71,6 +71,8 @@ pub enum Why {
     EscapeChord,
     /// A d-pad button pressed with Guide, and its release.
     GuideDpadChord,
+    /// A sound step button pressed with Guide, and its release.
+    GuideSoundChord,
     /// Start pressed with Guide held, and its release.
     ChordStart,
     /// The system menu is open.
@@ -204,6 +206,12 @@ impl OwnershipView {
         ) && ((self.guide_held && self.guide_mode != GuideMode::App) || self.chord_buttons.contains(&button))
     }
 
+    fn sound_chord(&self, button: ButtonName) -> bool {
+        crate::sound::SoundStep::from_chord_button(button).is_some()
+            && ((!self.menu_open && self.guide_held && self.guide_mode != GuideMode::App)
+                || self.chord_buttons.contains(&button))
+    }
+
     fn menu_release(&self, button: ButtonName) -> bool {
         !self.menu_open && self.menu_buttons.contains(&button)
     }
@@ -296,9 +304,12 @@ pub fn owner(view: &OwnershipView, button: ButtonName, phase: Phase) -> Owner {
     if let Some(owner) = view.tehuti_first(button, phase) {
         return owner;
     }
-    // Outside passthrough the Guide d-pad chord outranks push-to-talk, as `route` and dispatch do.
+    // Outside passthrough Guide chords outrank push-to-talk, as `route` and dispatch do.
     if view.dpad_chord(button) {
         return Owner::Tehuti(Why::GuideDpadChord);
+    }
+    if view.sound_chord(button) {
+        return Owner::Tehuti(Why::GuideSoundChord);
     }
     if view.talks(button) {
         return Owner::Talk(view.talk_source);
@@ -329,6 +340,9 @@ fn passthrough_owner(view: &OwnershipView, button: ButtonName, phase: Phase) -> 
     }
     if view.dpad_chord(button) {
         return Owner::Tehuti(Why::GuideDpadChord);
+    }
+    if view.sound_chord(button) {
+        return Owner::Tehuti(Why::GuideSoundChord);
     }
     Owner::App
 }
@@ -384,6 +398,8 @@ impl OwnershipView {
             Some(Why::ChordStart)
         } else if self.dpad_chord(button) {
             Some(Why::GuideDpadChord)
+        } else if self.sound_chord(button) {
+            Some(Why::GuideSoundChord)
         } else {
             None
         }
@@ -478,11 +494,13 @@ impl State {
 }
 
 impl Owner {
-    /// Hides Guide unless forwarded, chord Start, and a winning Talk binding.
+    /// Hides Guide unless forwarded, chord Start, sound chords, and a winning Talk binding.
     #[must_use]
     pub const fn hides_from_pad(self, guide_forwarded: bool) -> bool {
-        matches!(self, Self::Tehuti(Why::ChordStart) | Self::Talk(_))
-            || (matches!(self, Self::Tehuti(Why::EscapeChord)) && !guide_forwarded)
+        matches!(
+            self,
+            Self::Tehuti(Why::ChordStart | Why::GuideSoundChord) | Self::Talk(_)
+        ) || (matches!(self, Self::Tehuti(Why::EscapeChord)) && !guide_forwarded)
     }
 }
 
@@ -610,11 +628,14 @@ mod tests {
                 && button != ButtonName::Guide
                 && !view.start_chord(button, phase)
                 && !view.dpad_chord(button)
+                && !view.sound_chord(button)
             {
                 prop_assert_eq!(got, Owner::Talk(view.talk_source));
             }
             if !view.passthrough && !matches!(got, Owner::Tehuti(_) | Owner::Talk(_)) {
-                prop_assert!(!view.dpad_chord(button) && !view.menu_release(button));
+                prop_assert!(
+                    !view.dpad_chord(button) && !view.sound_chord(button) && !view.menu_release(button)
+                );
             }
             if view.level == Level::Columns
                 && !view.passthrough
