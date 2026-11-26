@@ -1,0 +1,92 @@
+# tmux: prefix chords as pad steps and voice destinations.
+#
+# Launch a dedicated terminal with this app id (for example, `foot --app-id=tmux tmux`
+# or `kitty --class=tmux tmux`), or copy this file with your terminal's `app_id` and a
+# `title` match. Every tmux action sends tmux's default prefix (Ctrl+B) on its own, so
+# the user never presses the prefix.
+#
+# Pad button map (steps):
+#   LB / RB         Previous / next tmux window (Ctrl+B p / Ctrl+B n)
+#   D-pad           Move between panes (Ctrl+B Up / Down / Left / Right)
+#   X (west)        Cycle pane layout (Ctrl+B Space)
+#   A (south)       Enter
+#   B (east)        Backspace
+#   View (select)   Escape
+#   Y (north)       Left unmapped so the terminal on-screen keyboard opens on Y
+#
+# Voice phrases (destinations):
+#   "Split right", "Split below", "Window zero".."Window nine", "New window",
+#   "Zoom pane", "Detach", "Close pane", "Copy mode", "Paste buffer", "Copy", "Paste".
+#
+# Terminal copy/paste overrides:
+#   Terminals reserve Ctrl+C for interrupt (SIGINT) and Ctrl+V for literal-next, so
+#   clipboard copy and paste use Ctrl+Shift+C and Ctrl+Shift+V here. Tmux's internal
+#   scrollback copy mode and paste buffer remain separate as "Copy mode" (Ctrl+B [)
+#   and "Paste buffer" (Ctrl+B ]).
+
+app_id = "tmux"
+label = "tmux"
+unmatched_speech = "type"
+
+[keyboard]
+terminal = true
+
+[buttons]
+south = { key = "enter" }
+east = { key = "backspace" }
+west = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "space" }] }
+select = { key = "escape" }
+left_bumper = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "p" }] }
+right_bumper = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "n" }] }
+dpad_up = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "up" }] }
+dpad_down = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "down" }] }
+dpad_left = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "left" }] }
+dpad_right = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "right" }] }
+
+[speech]
+hotwords = [
+    "tmux",
+    "detach",
+    "zoom pane",
+    "split right",
+    "split below",
+    "copy mode",
+    "paste buffer",
+]
+"Split right" = { sequence = [{ key = "b", mods = ["ctrl"] }, { text = "%" }] }
+"Split below" = { sequence = [{ key = "b", mods = ["ctrl"] }, { text = "\"" }] }
+"Window zero" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "0" }] }
+"Window one" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "1" }] }
+"Window two" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "2" }] }
+"Window three" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "3" }] }
+"Window four" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "4" }] }
+"Window five" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "5" }] }
+"Window six" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "6" }] }
+"Window seven" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "7" }] }
+"Window eight" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "8" }] }
+"Window nine" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "9" }] }
+"New window" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "c" }] }
+"Zoom pane" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "z" }] }
+"Detach" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "d" }] }
+"Close pane" = { sequence = [{ key = "b", mods = ["ctrl"] }, { key = "x" }] }
+"Copy mode" = { sequence = [{ key = "b", mods = ["ctrl"] }, { text = "[" }] }
+"Paste buffer" = { sequence = [{ key = "b", mods = ["ctrl"] }, { text = "]" }] }
+# Terminal clipboard overrides: Ctrl+Shift+C/V replace Ctrl+C/V so Ctrl+C stays SIGINT.
+"Copy" = { key = "c", mods = ["ctrl", "shift"] }
+"Paste" = { key = "v", mods = ["ctrl", "shift"] }
+
+[ticker]
+enabled = true
+speech = "own"
+
+[ticker.buttons]
+south = "Enter"
+east = "Backspace"
+west = "Cycle layout"
+select = "Escape"
+left_bumper = "Prev window"
+right_bumper = "Next window"
+dpad_up = "Pane up"
+dpad_down = "Pane down"
+dpad_left = "Pane left"
+dpad_right = "Pane right"

@@ -1046,7 +1046,8 @@ impl Context {
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
             | MappingAction::Ticker { .. }
-            | MappingAction::UndoDictation { .. } => None,
+            | MappingAction::UndoDictation { .. }
+            | MappingAction::Sequence { .. } => None,
         })
     }
 
@@ -1069,7 +1070,8 @@ impl Context {
             | MappingAction::Notify { .. }
             | MappingAction::Layout { .. }
             | MappingAction::Ticker { .. }
-            | MappingAction::UndoDictation { .. } => None,
+            | MappingAction::UndoDictation { .. }
+            | MappingAction::Sequence { .. } => None,
         }
     }
 }
@@ -1168,6 +1170,49 @@ enum MappingAction {
     UndoDictation {
         undo_dictation: UndoDictationMapping,
     },
+    Sequence {
+        sequence: SequenceSteps,
+    },
+}
+
+/// The most steps one key sequence may hold.
+pub const MAX_SEQUENCE_STEPS: usize = 32;
+
+/// One step in a key sequence, sent after the previous step releases its keys and modifiers.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(untagged)]
+#[cfg_attr(feature = "arbitrary", derive(proptest_derive::Arbitrary))]
+pub enum SequenceStep {
+    /// Tap a key with optional modifiers.
+    Key {
+        key: KeyName,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mods: Vec<Modifier>,
+    },
+    /// Send Unicode text (layout-independent symbols such as `%` or `"`).
+    Text { text: Text },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
+struct SequenceSteps(Vec<SequenceStep>);
+
+impl<'de> serde::Deserialize<'de> for SequenceSteps {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let steps = Vec::<SequenceStep>::deserialize(deserializer)?;
+        if steps.is_empty() {
+            return Err(serde::de::Error::custom(
+                "sequence must contain at least one step",
+            ));
+        }
+        if steps.len() > MAX_SEQUENCE_STEPS {
+            return Err(serde::de::Error::custom(format!(
+                "sequence has at most {MAX_SEQUENCE_STEPS} steps"
+            )));
+        }
+        Ok(Self(steps))
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1240,6 +1285,9 @@ impl MappingAction {
             Self::Layout { layout } => Action::Layout { action: *layout },
             Self::Ticker { .. } => Action::ToggleTicker,
             Self::UndoDictation { .. } => Action::UndoDictation,
+            Self::Sequence { sequence } => Action::Sequence {
+                steps: sequence.0.clone(),
+            },
         }
     }
 }
@@ -1646,6 +1694,8 @@ pub enum Action {
     /// Delete the last dictated phrase, or one character once anything else was typed; the core expands it
     /// into backspaces, so it never reaches the compositor.
     UndoDictation,
+    /// Send key taps and text steps in order, releasing each step before the next; reserved for the core.
+    Sequence { steps: Vec<SequenceStep> },
 }
 
 /// A tiling action a context maps to a button or phrase, written in kebab case,

@@ -1060,4 +1060,140 @@ text = "a\u0000b"
         assert!(parse_context("app_id = 'mgba-qt'\nlabel = \"a\\u0000b\"\nbuttons = {}").is_err());
         assert!(parse_context("app_id = 'mgba-qt'\nlabel = 3\nbuttons = {}").is_err());
     }
+
+    #[test]
+    fn sequence_mappings_validate_bounds_and_unknown_fields() {
+        use tehuti_protocol::{Action, ButtonName, MAX_SEQUENCE_STEPS, Modifier, SequenceStep, Text};
+        let context = parse_context(
+            "app_id = 'test'\n\
+             [buttons]\n\
+             right_bumper = { sequence = [{ key = 'b', mods = ['ctrl'] }, { key = 'n' }] }\n\
+             [speech]\n\
+             'Split right' = { sequence = [{ key = 'b', mods = ['ctrl'] }, { text = '%' }] }\n",
+        )
+        .unwrap();
+        assert_eq!(
+            context.action_for(ButtonName::RightBumper),
+            Some(Action::Sequence {
+                steps: vec![
+                    SequenceStep::Key {
+                        key: KeyName::B,
+                        mods: vec![Modifier::Ctrl],
+                    },
+                    SequenceStep::Key {
+                        key: KeyName::N,
+                        mods: vec![],
+                    },
+                ],
+            })
+        );
+        assert_eq!(
+            context.speech_action("split right"),
+            Some(Action::Sequence {
+                steps: vec![
+                    SequenceStep::Key {
+                        key: KeyName::B,
+                        mods: vec![Modifier::Ctrl],
+                    },
+                    SequenceStep::Text {
+                        text: Text::new("%".into()).unwrap(),
+                    },
+                ],
+            })
+        );
+        assert_eq!(context.key_for(ButtonName::RightBumper), None);
+        assert_eq!(context.held_key_for(ButtonName::RightBumper), None);
+
+        let empty = parse_context("app_id = 'test'\n[buttons]\neast = { sequence = [] }");
+        assert!(empty.is_err(), "empty sequence must fail");
+
+        let too_many = vec!["{ key = 'a' }"; MAX_SEQUENCE_STEPS.saturating_add(1)].join(", ");
+        let over_limit = parse_context(&format!(
+            "app_id = 'test'\n[buttons]\neast = {{ sequence = [{too_many}] }}"
+        ));
+        assert!(over_limit.is_err(), "over-long sequence must fail");
+
+        let bad_key =
+            parse_context("app_id = 'test'\n[buttons]\neast = { sequence = [{ key = 'florp' }] }")
+                .unwrap_err();
+        assert!(bad_key.contains("florp"), "{bad_key}");
+
+        let bad_hold = parse_context(
+            "app_id = 'test'\n[buttons]\neast = { sequence = [{ key = 'b', hold = true }] }",
+        );
+        assert!(bad_hold.is_err(), "hold is not valid inside a sequence step");
+    }
+
+    #[test]
+    fn tmux_context_maps_pad_steps_voice_destinations_and_terminal_clipboard() {
+        use tehuti_protocol::{Action, ButtonName, Modifier, SequenceStep, Text};
+        let prefix = SequenceStep::Key {
+            key: KeyName::B,
+            mods: vec![Modifier::Ctrl],
+        };
+        let key_step = |key| Action::Sequence {
+            steps: vec![prefix.clone(), SequenceStep::Key { key, mods: vec![] }],
+        };
+        let text_step = |text: &str| Action::Sequence {
+            steps: vec![
+                prefix.clone(),
+                SequenceStep::Text {
+                    text: Text::new(text.into()).unwrap(),
+                },
+            ],
+        };
+
+        let context = parse_context(include_str!("../../../examples/tmux/context.toml")).unwrap();
+        assert_eq!(context.app_id(), "tmux");
+        assert_eq!(context.keyboard().terminal, Some(true));
+        assert!(context.warnings().is_empty(), "{:?}", context.warnings());
+        assert!(
+            context.skipped_phrases().is_empty(),
+            "{:?}",
+            context.skipped_phrases()
+        );
+        assert_eq!(
+            context.action_for(ButtonName::North),
+            None,
+            "North stays free for the terminal on-screen keyboard"
+        );
+        for (button, expected) in [
+            (ButtonName::LeftBumper, key_step(KeyName::P)),
+            (ButtonName::RightBumper, key_step(KeyName::N)),
+            (ButtonName::DpadUp, key_step(KeyName::Up)),
+            (ButtonName::DpadDown, key_step(KeyName::Down)),
+            (ButtonName::DpadLeft, key_step(KeyName::Left)),
+            (ButtonName::DpadRight, key_step(KeyName::Right)),
+            (ButtonName::West, key_step(KeyName::Space)),
+        ] {
+            assert_eq!(context.action_for(button), Some(expected), "{button:?}");
+        }
+        for (phrase, expected) in [
+            ("Split right", text_step("%")),
+            ("Split below", text_step("\"")),
+            ("Window three", key_step(KeyName::Digit3)),
+            ("window 3", key_step(KeyName::Digit3)),
+            ("Zoom pane", key_step(KeyName::Z)),
+            ("Detach", key_step(KeyName::D)),
+            ("New window", key_step(KeyName::C)),
+            ("Copy mode", text_step("[")),
+            ("Paste buffer", text_step("]")),
+            (
+                "Copy",
+                Action::Key {
+                    key: KeyName::C,
+                    mods: vec![Modifier::Ctrl, Modifier::Shift],
+                },
+            ),
+            (
+                "Paste",
+                Action::Key {
+                    key: KeyName::V,
+                    mods: vec![Modifier::Ctrl, Modifier::Shift],
+                },
+            ),
+        ] {
+            assert_eq!(context.speech_action(phrase), Some(expected), "{phrase}");
+        }
+    }
 }

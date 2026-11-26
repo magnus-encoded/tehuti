@@ -530,6 +530,49 @@ backspace = "Action"
     }
 
     #[test]
+    fn tmux_context_lists_both_pad_steps_and_voice_units_in_the_ticker() {
+        let tmux_source = include_str!("../../../examples/tmux/context.toml");
+        let global_source = include_str!("../../../examples/global/context.toml");
+        let contexts = contexts(&[global_source, tmux_source]);
+        assert!(ticker::enabled(&contexts, Some("tmux")));
+        let entries = texts(&ticker::entries(
+            &contexts,
+            Some("tmux"),
+            PadFamily::Letters,
+            Level::App,
+        ));
+        for expected in [
+            "LB -> Prev window",
+            "RB -> Next window",
+            "Up -> Pane up",
+            "Down -> Pane down",
+            "Left -> Pane left",
+            "Right -> Pane right",
+            "X -> Cycle layout",
+            "\"Split right\" -> [Ctrl] + [B] [%]",
+            "\"Split below\" -> [Ctrl] + [B] [\"]",
+            "\"Window three\" -> [Ctrl] + [B] [3]",
+            "\"Zoom pane\" -> [Ctrl] + [B] [Z]",
+            "\"Detach\" -> [Ctrl] + [B] [D]",
+            "\"Copy\" -> [Ctrl] + [Shift] + [C]",
+            "\"Paste\" -> [Ctrl] + [Shift] + [V]",
+        ] {
+            assert!(
+                entries.contains(&expected.to_owned()),
+                "missing {expected} in {entries:#?}"
+            );
+        }
+        let tmux = parse_context(tmux_source).unwrap();
+        for mapping in tmux.speech_mappings() {
+            let quoted = format!("\"{}\"", mapping.phrase);
+            assert!(
+                entries.iter().any(|entry| entry.starts_with(&quoted)),
+                "ticker must show the voice name {quoted} in {entries:#?}"
+            );
+        }
+    }
+
+    #[test]
     fn text_that_fits_stays_still() {
         for step in [0, 1, 99] {
             assert_eq!(ticker::scroll_offset(step, 100, 100, 6, 48), 0);

@@ -130,6 +130,7 @@ fields are rejected.
 | Value | Effect |
 | --- | --- |
 | `{ key = "tab", mods = ["ctrl"], hold = true }` | Taps a key. `mods` lists `ctrl`, `alt`, `shift` or `super`. `hold` keeps the key down while the button is held (buttons only; no `mods`). |
+| `{ sequence = [{ key = "b", mods = ["ctrl"] }, { key = "n" }] }` | Sends 1 to 32 key or text steps in order, releasing each step's keys and modifiers before the next (for prefix chords such as tmux). |
 | `{ text = "Hello" }` | Types Unicode text. |
 | `{ launch = "org.example.App.desktop" }` | Launches an installed desktop entry. |
 | `{ close = "focused" }` | Closes the focused window. |

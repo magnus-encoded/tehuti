@@ -165,6 +165,18 @@ impl<Key: Copy + Eq> TapHold<Key> {
             .collect()
     }
 
+    /// Whether any tapped key or modifier is still held or waiting for a re-tap gap.
+    #[must_use]
+    pub const fn has_held(&self) -> bool {
+        !self.held_taps.is_empty()
+    }
+
+    /// The current focus generation; increments on every focus change.
+    #[must_use]
+    pub const fn focus_epoch(&self) -> u32 {
+        self.focus_epoch
+    }
+
     /// Handles a failed release timer: releases everything and allows a new timer.
     pub fn timer_failed(&mut self) -> Vec<(Key, bool)> {
         self.release_timer = ReleaseTimer::Idle;

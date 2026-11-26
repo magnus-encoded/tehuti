@@ -168,6 +168,38 @@ order = 1
     }
 
     #[test]
+    fn tmux_example_passes_check_config_with_no_errors_or_warnings() {
+        let examples = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+        let report = check(&examples);
+        assert!(!report.has_errors(), "{report}");
+        assert!(
+            !report
+                .findings
+                .iter()
+                .any(|finding| finding.path.ends_with("tmux/context.toml")),
+            "tmux example should produce no warnings or errors: {report}"
+        );
+
+        let directory = tempfile::tempdir().unwrap();
+        write(
+            directory.path(),
+            "tmux/context.toml",
+            include_str!("../../../examples/tmux/context.toml"),
+        );
+        let output = Command::new(env!("CARGO_BIN_EXE_tehuti"))
+            .args(["--check-config".as_ref(), directory.path().as_os_str()])
+            .env_clear()
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{output:?}");
+        let stdout = String::from_utf8(output.stdout).unwrap();
+        assert!(
+            stdout.ends_with("1 files checked, 0 errors, 0 warnings\n"),
+            "{stdout}"
+        );
+    }
+
+    #[test]
     fn goal_phrases_and_menu_actions_are_not_voice_only() {
         let directory = tempfile::tempdir().unwrap();
         write(
