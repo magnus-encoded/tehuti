@@ -150,12 +150,12 @@ pub(super) fn is_adjuster_phrase(state: &State, text: &str) -> bool {
 /// Starts a freshly opened gauge from the stick already held.
 pub(super) fn seed_stick(state: &mut State) {
     if let Some(gauge) = &mut state.adjuster {
-        gauge.sticks(state.adjuster_stick);
+        gauge.sticks(state.left_stick.1);
     }
 }
 
 pub(super) fn adjuster_sticks(state: &mut State, sticks: Sticks) {
-    state.adjuster_stick = sticks.left.1;
+    state.left_stick = sticks.left;
     if state.volume_pending == crate::adjuster::VolumeRead::Pending {
         return;
     }

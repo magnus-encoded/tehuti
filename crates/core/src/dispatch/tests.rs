@@ -2273,7 +2273,7 @@ fn settings_button_hints_name_a_and_b_through_navigation_and_confirmation() {
 proptest! {
     #[test]
     fn settings_keeps_speech_commands_and_transcript_mapping(plugin_active in prop::bool::ANY) {
-        let context = tehuti_protocol::parse_context("app_id = 'voice-test'\n[buttons]\n[speech.screenshot]\nnotify = 'capture'").unwrap();
+        let context = tehuti_protocol::parse_context("app_id = 'voice-test'\n[buttons]\n[speech.bookmark]\nnotify = 'saved'").unwrap();
         let mut world = World { plugin_active, ..World::default() };
         let state = configured(vec![context], "voice-test");
         let state = settings_event(&mut world, state, Event::Speech { text: Text::new("pop the hood".into()).unwrap() });
@@ -2282,9 +2282,9 @@ proptest! {
         let state = world.run(state, pad_button(ButtonName::Record, ButtonState::Released));
         prop_assert!(world.trace.contains(&Effect::SpeechCommand(SpeechEffect::Stop { session: 0, transcribe: true })), "record transcribes while settings is open");
         world.trace.clear();
-        let text = Text::new("Screenshot.".into()).unwrap();
+        let text = Text::new("Bookmark.".into()).unwrap();
         let state = world.run(state, Input::Speech(SpeechInput::Transcript { session: 0, text: text.clone() }));
-        let expected = Action::Notice { text: Text::new("capture".into()).unwrap() };
+        let expected = Action::Notice { text: Text::new("saved".into()).unwrap() };
         prop_assert!(state.settings().open);
         prop_assert!(world.trace.contains(&Effect::TranscriptReceived { session: 0, text: text.clone(), admitted: true }), "transcript is admitted");
         prop_assert!(world.trace.contains(&Effect::SpeechRouted { text, first: Some(expected.clone()), plugin: plugin_active, fuzzy: None }), "transcript is mapped while settings is open");
@@ -2459,7 +2459,7 @@ fn south_held_before_opening_cannot_enter_display_until_released() {
 fn open_settings_takes_only_its_voice_phrase_from_contexts_and_plugins() {
     for plugin_active in [false, true] {
         let context = tehuti_protocol::parse_context(
-            "app_id = 'example-app'\n[buttons]\n[speech.screenshot]\nnotify = 'capture'",
+            "app_id = 'example-app'\n[buttons]\n[speech.bookmark]\nnotify = 'saved'",
         )
         .unwrap();
         let mut world = World {
@@ -2482,10 +2482,10 @@ fn open_settings_takes_only_its_voice_phrase_from_contexts_and_plugins() {
                 .any(|effect| matches!(effect, Effect::SpeechRouted { .. }))
         );
         world.trace.clear();
-        let text = Text::new("Screenshot.".into()).unwrap();
+        let text = Text::new("Bookmark.".into()).unwrap();
         let state = settings_event(&mut world, state, Event::Speech { text: text.clone() });
         let expected = Action::Notice {
-            text: Text::new("capture".into()).unwrap(),
+            text: Text::new("saved".into()).unwrap(),
         };
         assert!(state.settings().open);
         assert!(world.trace.contains(&Effect::SpeechRouted {

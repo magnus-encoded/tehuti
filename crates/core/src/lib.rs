@@ -624,6 +624,10 @@ impl State {
         self.guide_held.is_some()
     }
 
+    pub(crate) fn chord_button_held(&self, button: ButtonName) -> bool {
+        self.chord_buttons.contains(&button)
+    }
+
     /// Shows on the bar what the on-screen keyboard did with speech.
     pub(crate) fn keyboard_feedback(&mut self, text: &str) {
         self.bar.keyboard_feedback(text);
@@ -725,6 +729,9 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         let _command = menu_input(&mut state, event);
         return (state, Vec::new(), false);
     }
+    if is_talk_button(&state, event, plugin_active) {
+        return (state, Vec::new(), false);
+    }
     if let Some(actions) = shoulder_level(&state, event) {
         return (state, actions, false);
     }
@@ -745,7 +752,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
         return (state, actions, false);
     }
-    if let Some(actions) = talk_or_invoke(&state, event, plugin_active) {
+    if let Some(actions) = invoke_speech(&state, event) {
         return (state, actions, false);
     }
     if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
@@ -761,27 +768,29 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     (state, actions, false)
 }
 
-/// A push-to-talk press does nothing more. Speech meets the built-in `invoke` verb
-/// ahead of plugin verbs and context phrases; its words snap to the focused and
-/// global contexts' invoke words.
-fn talk_or_invoke(state: &State, event: &Event, plugin_active: bool) -> Option<Vec<Action>> {
-    let transcript = match event {
-        Event::Button {
-            name,
-            state: button_state,
-        } if matches!(
-            ownership::owner(
-                &state.ownership_view(plugin_active),
-                *name,
-                (*button_state).into()
-            ),
-            ownership::Owner::Talk(_)
-        ) =>
-        {
-            return Some(Vec::new());
-        }
-        Event::Speech { text } => text,
-        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => return None,
+fn is_talk_button(state: &State, event: &Event, plugin_active: bool) -> bool {
+    let Event::Button {
+        name,
+        state: button_state,
+    } = event
+    else {
+        return false;
+    };
+    matches!(
+        ownership::owner(
+            &state.ownership_view(plugin_active),
+            *name,
+            (*button_state).into()
+        ),
+        ownership::Owner::Talk(_)
+    )
+}
+
+/// Speech meets the built-in `invoke` verb ahead of plugin verbs and context phrases;
+/// its words snap to the focused and global contexts' invoke words.
+fn invoke_speech(state: &State, event: &Event) -> Option<Vec<Action>> {
+    let Event::Speech { text: transcript } = event else {
+        return None;
     };
     let known = [focused_context(state), global_context(state)]
         .into_iter()
@@ -997,12 +1006,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
             return None;
         }
         let phrase = text.as_str();
-        if unit_verbs::launcher_request(phrase).is_some()
-            || matches!(
-                tehuti_protocol::normalize_phrase(phrase).as_str(),
-                "start recording" | "stop recording"
-            )
-        {
+        if unit_verbs::launcher_request(phrase).is_some() || menu::capture_phrase(phrase).is_some() {
             return None;
         }
         if state.level == Level::App {
@@ -1231,6 +1235,19 @@ fn guide_dpad(state: &mut State, name: ButtonName, button: ButtonState) -> Vec<A
     }
 }
 
+/// Right bumper in a Guide chord: cancels the Guide tap and tracks its release.
+fn guide_capture(state: &mut State, name: ButtonName, button: ButtonState) -> Vec<Action> {
+    state.guide_tap = None;
+    match button {
+        ButtonState::Pressed if !state.chord_buttons.contains(&name) => {
+            state.chord_buttons.push(name);
+        }
+        ButtonState::Pressed => {}
+        ButtonState::Released => state.chord_buttons.retain(|held| *held != name),
+    }
+    Vec::new()
+}
+
 fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
     match event {
         Event::Button {
@@ -1244,6 +1261,7 @@ fn escape_chord(state: &mut State, event: &Event) -> Option<Vec<Action>> {
                     Some(Vec::new())
                 }
                 Some(ownership::Why::GuideDpadChord) => Some(guide_dpad(state, *name, *button_state)),
+                Some(ownership::Why::GuideCaptureChord) => Some(guide_capture(state, *name, *button_state)),
                 _ if *name == ButtonName::Start => {
                     state.start_held = *button_state == ButtonState::Pressed;
                     if state.start_held {

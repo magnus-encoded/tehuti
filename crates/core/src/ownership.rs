@@ -71,6 +71,8 @@ pub enum Why {
     EscapeChord,
     /// A d-pad button pressed with Guide, and its release.
     GuideDpadChord,
+    /// Right bumper pressed with Guide, and its release.
+    GuideCaptureChord,
     /// Start pressed with Guide held, and its release.
     ChordStart,
     /// The system menu is open.
@@ -204,6 +206,12 @@ impl OwnershipView {
         ) && ((self.guide_held && self.guide_mode != GuideMode::App) || self.chord_buttons.contains(&button))
     }
 
+    fn capture_chord(&self, button: ButtonName) -> bool {
+        button == ButtonName::RightBumper
+            && ((self.guide_held && self.guide_mode != GuideMode::App)
+                || self.chord_buttons.contains(&button))
+    }
+
     fn menu_release(&self, button: ButtonName) -> bool {
         !self.menu_open && self.menu_buttons.contains(&button)
     }
@@ -296,9 +304,12 @@ pub fn owner(view: &OwnershipView, button: ButtonName, phase: Phase) -> Owner {
     if let Some(owner) = view.tehuti_first(button, phase) {
         return owner;
     }
-    // Outside passthrough the Guide d-pad chord outranks push-to-talk, as `route` and dispatch do.
+    // Outside passthrough the Guide d-pad and capture chords outrank push-to-talk, as `route` and dispatch do.
     if view.dpad_chord(button) {
         return Owner::Tehuti(Why::GuideDpadChord);
+    }
+    if view.capture_chord(button) {
+        return Owner::Tehuti(Why::GuideCaptureChord);
     }
     if view.talks(button) {
         return Owner::Talk(view.talk_source);
@@ -329,6 +340,9 @@ fn passthrough_owner(view: &OwnershipView, button: ButtonName, phase: Phase) -> 
     }
     if view.dpad_chord(button) {
         return Owner::Tehuti(Why::GuideDpadChord);
+    }
+    if view.capture_chord(button) {
+        return Owner::Tehuti(Why::GuideCaptureChord);
     }
     Owner::App
 }
@@ -384,6 +398,8 @@ impl OwnershipView {
             Some(Why::ChordStart)
         } else if self.dpad_chord(button) {
             Some(Why::GuideDpadChord)
+        } else if self.capture_chord(button) {
+            Some(Why::GuideCaptureChord)
         } else {
             None
         }
@@ -478,11 +494,13 @@ impl State {
 }
 
 impl Owner {
-    /// Hides Guide unless forwarded, chord Start, and a winning Talk binding.
+    /// Hides Guide unless forwarded, chord Start, the capture chord, and a winning Talk binding.
     #[must_use]
     pub const fn hides_from_pad(self, guide_forwarded: bool) -> bool {
-        matches!(self, Self::Tehuti(Why::ChordStart) | Self::Talk(_))
-            || (matches!(self, Self::Tehuti(Why::EscapeChord)) && !guide_forwarded)
+        matches!(
+            self,
+            Self::Tehuti(Why::ChordStart | Why::GuideCaptureChord) | Self::Talk(_)
+        ) || (matches!(self, Self::Tehuti(Why::EscapeChord)) && !guide_forwarded)
     }
 }
 
@@ -610,11 +628,16 @@ mod tests {
                 && button != ButtonName::Guide
                 && !view.start_chord(button, phase)
                 && !view.dpad_chord(button)
+                && !view.capture_chord(button)
             {
                 prop_assert_eq!(got, Owner::Talk(view.talk_source));
             }
             if !view.passthrough && !matches!(got, Owner::Tehuti(_) | Owner::Talk(_)) {
-                prop_assert!(!view.dpad_chord(button) && !view.menu_release(button));
+                prop_assert!(
+                    !view.dpad_chord(button)
+                        && !view.capture_chord(button)
+                        && !view.menu_release(button)
+                );
             }
             if view.level == Level::Columns
                 && !view.passthrough
@@ -938,7 +961,7 @@ mod tests {
             let got = owner(&view, scenario.button, scenario.phase);
             let taken = matches!(
                 got,
-                Owner::Tehuti(Why::EscapeChord | Why::ChordStart) | Owner::Talk(_)
+                Owner::Tehuti(Why::EscapeChord | Why::ChordStart | Why::GuideCaptureChord) | Owner::Talk(_)
             );
             if taken && scenario.phase == Phase::Pressed && !state.passthrough() {
                 let (_, actions, routed) =
@@ -1067,5 +1090,28 @@ mod tests {
         let talk = state.pad_button_owner(&[ButtonName::Record], false, ButtonName::Record, Phase::Pressed);
         assert_eq!(talk, Owner::Talk(TalkSource::Controller));
         assert!(talk.hides_from_pad(false));
+    }
+
+    #[test]
+    fn guide_capture_chord_owns_right_bumper_and_hides_it_from_the_pad() {
+        let state = State::default();
+        let held = [ButtonName::Guide, ButtonName::RightBumper];
+        let pressed = state.pad_button_owner(&held, false, ButtonName::RightBumper, Phase::Pressed);
+        assert_eq!(pressed, Owner::Tehuti(Why::GuideCaptureChord));
+        assert!(pressed.hides_from_pad(false));
+        let (app_guide, _) = crate::step(
+            State::with_contexts(vec![
+                parse_context(
+                    "app_id = 'app'\n[buttons]\n[pad]\npassthrough = true\nvirtual = true\nguide = 'app'",
+                )
+                .unwrap(),
+            ]),
+            &Event::Focus {
+                app_id: Some("app".into()),
+                title: String::new(),
+            },
+        );
+        let forwarded = app_guide.pad_button_owner(&held, false, ButtonName::RightBumper, Phase::Pressed);
+        assert_eq!(forwarded, Owner::App);
     }
 }

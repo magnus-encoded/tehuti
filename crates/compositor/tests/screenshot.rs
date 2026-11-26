@@ -1,4 +1,7 @@
 #[cfg(test)]
+pub mod harness;
+
+#[cfg(test)]
 mod tests {
     use smithay::reexports::wayland_server::Display;
     use tehuti::{
@@ -300,5 +303,407 @@ mod tests {
                 },
             )
             .unwrap();
+    }
+
+    #[test]
+    fn voice_and_pad_capture_commands_save_screen_and_window_screenshots() {
+        if std::env::var_os("CAPTURE_PROBE").is_none() {
+            run_capture_probe();
+            return;
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        let folder =
+            std::path::PathBuf::from(std::env::var_os("XDG_PICTURES_DIR").unwrap()).join("Screenshots");
+
+        let _missing = driver
+            .execute(
+                &mut compositor,
+                Request::Say {
+                    text: "screenshot window".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            compositor.visible_notice_text().as_deref(),
+            Some("SCREENSHOT FAILED: no focused window")
+        );
+        assert!(
+            screenshot_files(&folder).is_empty(),
+            "missing focus writes no file"
+        );
+
+        let _full = driver
+            .execute(
+                &mut compositor,
+                Request::Say {
+                    text: "Screenshot.".into(),
+                },
+            )
+            .unwrap();
+        let after_full = screenshot_files(&folder);
+        assert_eq!(after_full.len(), 1);
+        assert_eq!(
+            image::open(&after_full[0]).unwrap().to_rgba8().dimensions(),
+            (1280, 720)
+        );
+
+        verify_window_and_pad_capture(&mut display, &mut compositor, &mut driver, &folder, &after_full);
+    }
+
+    fn run_capture_probe() {
+        let directory = tempfile::tempdir().unwrap();
+        let pictures = directory.path().join("Pictures");
+        let mut command = std::process::Command::new(std::env::current_exe().unwrap());
+        let _configured = command
+            .args([
+                "--exact",
+                "tests::voice_and_pad_capture_commands_save_screen_and_window_screenshots",
+            ])
+            .env("CAPTURE_PROBE", "1")
+            .env("HOME", directory.path())
+            .env("XDG_CONFIG_HOME", directory.path().join("config"))
+            .env("XDG_DATA_HOME", directory.path().join("data"))
+            .env("XDG_DATA_DIRS", directory.path().join("none"))
+            .env("XDG_PICTURES_DIR", &pictures)
+            .env("TEHUTI_TEST_SIZE", "1280x720");
+        let result = command.output().unwrap();
+        assert!(
+            result.status.success(),
+            "capture probe: {}{}",
+            String::from_utf8_lossy(&result.stdout),
+            String::from_utf8_lossy(&result.stderr)
+        );
+    }
+
+    fn screenshot_files(folder: &std::path::Path) -> Vec<std::path::PathBuf> {
+        let mut files: Vec<_> = std::fs::read_dir(folder)
+            .into_iter()
+            .flatten()
+            .map(|entry| entry.unwrap().path())
+            .collect();
+        files.sort();
+        files
+    }
+
+    fn verify_window_and_pad_capture(
+        display: &mut Display<Compositor>,
+        compositor: &mut Compositor,
+        driver: &mut Driver,
+        folder: &std::path::Path,
+        previous: &[std::path::PathBuf],
+    ) {
+        let (server, client_stream) = std::os::unix::net::UnixStream::pair().unwrap();
+        let _client = display
+            .handle()
+            .insert_client(server, std::sync::Arc::new(tehuti::state::ClientState::default()))
+            .unwrap();
+        let mut harness = crate::harness::Harness::new();
+        let (ready_tx, ready_rx) = harness.channel::<()>();
+        let (stop_tx, stop_rx) = std::sync::mpsc::channel::<()>();
+        let client = harness.client(move || {
+            coloured_window_client(client_stream, &ready_tx, &stop_rx);
+        });
+        harness.serve_until(display, compositor, || ready_rx.try_recv().is_ok());
+        compositor.space.refresh();
+
+        let _window_shot = driver
+            .execute(
+                compositor,
+                Request::Say {
+                    text: "screenshot window".into(),
+                },
+            )
+            .unwrap();
+        let after_voice = screenshot_files(folder);
+        let voice_path = after_voice
+            .iter()
+            .find(|path| !previous.contains(path))
+            .expect("voice window screenshot file");
+        assert_window_shot(voice_path);
+
+        verify_pad_capture_choice(compositor, driver, folder, &after_voice);
+
+        stop_tx.send(()).unwrap();
+        harness.serve_until_ended(display, compositor, &[&client]);
+        client.join();
+    }
+
+    fn open_capture_choice(compositor: &mut Compositor, driver: &mut Driver) {
+        let _hold = driver
+            .execute(
+                compositor,
+                Request::Hold {
+                    button: ButtonName::Guide,
+                },
+            )
+            .unwrap();
+        let _press = driver
+            .execute(
+                compositor,
+                Request::Press {
+                    button: ButtonName::RightBumper,
+                },
+            )
+            .unwrap();
+        let _release = driver
+            .execute(
+                compositor,
+                Request::Release {
+                    button: ButtonName::Guide,
+                },
+            )
+            .unwrap();
+    }
+
+    fn stick_down(compositor: &mut Compositor, driver: &mut Driver) {
+        let _down = driver
+            .execute(
+                compositor,
+                Request::Stick {
+                    left: (0, 800),
+                    right: (0, 0),
+                },
+            )
+            .unwrap();
+        let _rest = driver
+            .execute(
+                compositor,
+                Request::Stick {
+                    left: (0, 0),
+                    right: (0, 0),
+                },
+            )
+            .unwrap();
+    }
+
+    fn verify_pad_capture_choice(
+        compositor: &mut Compositor,
+        driver: &mut Driver,
+        folder: &std::path::Path,
+        previous: &[std::path::PathBuf],
+    ) {
+        open_capture_choice(compositor, driver);
+        let scene = driver.execute(compositor, Request::Scene).unwrap();
+        let rows: Vec<_> = scene["launcher"]["rows"]
+            .as_array()
+            .expect("capture choice rows")
+            .iter()
+            .map(|row| row["name"].as_str().unwrap())
+            .collect();
+        assert_eq!(rows, vec!["Screenshot", "Screenshot window", "Start recording"]);
+        assert_eq!(scene["launcher"]["selection"], 0);
+        if let Some(shot_dir) = std::env::var_os("SHOT_DIR") {
+            let shot_path = std::path::PathBuf::from(shot_dir).join("capture-choice.png");
+            let _saved = driver
+                .execute(compositor, Request::Shot { path: shot_path })
+                .unwrap();
+        }
+        stick_down(compositor, driver);
+        assert_eq!(
+            driver.execute(compositor, Request::Scene).unwrap()["launcher"]["selection"],
+            1
+        );
+        let _confirm = driver
+            .execute(
+                compositor,
+                Request::Press {
+                    button: ButtonName::South,
+                },
+            )
+            .unwrap();
+        assert!(
+            driver.execute(compositor, Request::Scene).unwrap()["launcher"].is_null(),
+            "confirm closes capture choice"
+        );
+        let after_pad = screenshot_files(folder);
+        let pad_path = after_pad
+            .iter()
+            .find(|path| !previous.contains(path))
+            .expect("pad window screenshot file");
+        assert_window_shot(pad_path);
+        verify_pad_capture_cancel(compositor, driver, folder, after_pad.len());
+    }
+
+    fn verify_pad_capture_cancel(
+        compositor: &mut Compositor,
+        driver: &mut Driver,
+        folder: &std::path::Path,
+        expected_count: usize,
+    ) {
+        open_capture_choice(compositor, driver);
+        let _cancel = driver
+            .execute(
+                compositor,
+                Request::Press {
+                    button: ButtonName::East,
+                },
+            )
+            .unwrap();
+        assert!(
+            driver.execute(compositor, Request::Scene).unwrap()["launcher"].is_null(),
+            "back cancels capture choice"
+        );
+        assert_eq!(screenshot_files(folder).len(), expected_count);
+    }
+
+    fn assert_window_shot(path: &std::path::Path) {
+        let shot = image::open(path).unwrap().to_rgba8();
+        let (width, height) = shot.dimensions();
+        assert!(
+            width > 0 && width < 1280,
+            "window shot width {width} must be cropped"
+        );
+        assert!(
+            height > 0 && height < 720,
+            "window shot height {height} must be cropped"
+        );
+        let mid_x = width.checked_div(2).unwrap();
+        let mid_y = height.checked_div(2).unwrap();
+        assert_eq!(*shot.get_pixel(mid_x, mid_y), image::Rgba([220, 40, 140, 255]));
+    }
+
+    #[derive(Default)]
+    struct WindowClient {
+        acked: bool,
+        size: (i32, i32),
+    }
+
+    impl
+        wayland_client::Dispatch<
+            wayland_client::protocol::wl_registry::WlRegistry,
+            wayland_client::globals::GlobalListContents,
+        > for WindowClient
+    {
+        fn event(
+            _: &mut Self,
+            _: &wayland_client::protocol::wl_registry::WlRegistry,
+            _: wayland_client::protocol::wl_registry::Event,
+            _: &wayland_client::globals::GlobalListContents,
+            _: &wayland_client::Connection,
+            _: &wayland_client::QueueHandle<Self>,
+        ) {
+        }
+    }
+
+    impl wayland_client::Dispatch<wayland_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase, ()>
+        for WindowClient
+    {
+        fn event(
+            _: &mut Self,
+            wm_base: &wayland_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase,
+            event: wayland_protocols::xdg::shell::client::xdg_wm_base::Event,
+            (): &(),
+            _: &wayland_client::Connection,
+            _: &wayland_client::QueueHandle<Self>,
+        ) {
+            if let wayland_protocols::xdg::shell::client::xdg_wm_base::Event::Ping { serial } = event {
+                wm_base.pong(serial);
+            }
+        }
+    }
+
+    impl wayland_client::Dispatch<wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface, ()>
+        for WindowClient
+    {
+        fn event(
+            state: &mut Self,
+            surface: &wayland_protocols::xdg::shell::client::xdg_surface::XdgSurface,
+            event: wayland_protocols::xdg::shell::client::xdg_surface::Event,
+            (): &(),
+            _: &wayland_client::Connection,
+            _: &wayland_client::QueueHandle<Self>,
+        ) {
+            if let wayland_protocols::xdg::shell::client::xdg_surface::Event::Configure { serial } = event {
+                surface.ack_configure(serial);
+                state.acked = true;
+            }
+        }
+    }
+
+    impl wayland_client::Dispatch<wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel, ()>
+        for WindowClient
+    {
+        fn event(
+            state: &mut Self,
+            _: &wayland_protocols::xdg::shell::client::xdg_toplevel::XdgToplevel,
+            event: wayland_protocols::xdg::shell::client::xdg_toplevel::Event,
+            (): &(),
+            _: &wayland_client::Connection,
+            _: &wayland_client::QueueHandle<Self>,
+        ) {
+            if let wayland_protocols::xdg::shell::client::xdg_toplevel::Event::Configure {
+                width,
+                height,
+                ..
+            } = event
+            {
+                state.size = (
+                    if width > 0 { width } else { 400 },
+                    if height > 0 { height } else { 300 },
+                );
+            }
+        }
+    }
+
+    wayland_client::delegate_noop!(WindowClient: ignore wayland_client::protocol::wl_surface::WlSurface);
+    wayland_client::delegate_noop!(WindowClient: ignore wayland_client::protocol::wl_compositor::WlCompositor);
+    wayland_client::delegate_noop!(WindowClient: ignore wayland_client::protocol::wl_output::WlOutput);
+    wayland_client::delegate_noop!(WindowClient: ignore wayland_client::protocol::wl_shm::WlShm);
+    wayland_client::delegate_noop!(WindowClient: ignore wayland_client::protocol::wl_shm_pool::WlShmPool);
+    wayland_client::delegate_noop!(WindowClient: ignore wayland_client::protocol::wl_buffer::WlBuffer);
+
+    fn coloured_window_client(
+        stream: std::os::unix::net::UnixStream,
+        ready: &crate::harness::Notifier<()>,
+        stop: &std::sync::mpsc::Receiver<()>,
+    ) {
+        use std::{io::Write as _, os::fd::AsFd as _};
+        use wayland_client::{
+            Connection,
+            globals::registry_queue_init,
+            protocol::{wl_compositor::WlCompositor, wl_shm},
+        };
+        use wayland_protocols::xdg::shell::client::xdg_wm_base::XdgWmBase;
+
+        let connection = Connection::from_socket(stream).unwrap();
+        let (globals, mut queue) = registry_queue_init::<WindowClient>(&connection).unwrap();
+        let handle = queue.handle();
+        let wl_compositor: WlCompositor = globals.bind(&handle, 1..=4, ()).unwrap();
+        let wm_base: XdgWmBase = globals.bind(&handle, 1..=1, ()).unwrap();
+        let shm: wl_shm::WlShm = globals.bind(&handle, 1..=1, ()).unwrap();
+        let surface = wl_compositor.create_surface(&handle, ());
+        let xdg = wm_base.get_xdg_surface(&surface, &handle, ());
+        let toplevel = xdg.get_toplevel(&handle, ());
+        toplevel.set_app_id("org.example.CaptureTarget".into());
+        surface.commit();
+        let mut client = WindowClient {
+            acked: false,
+            size: (400, 300),
+        };
+        while !client.acked {
+            let _dispatched = queue.roundtrip(&mut client).unwrap();
+        }
+        let width = client.size.0.min(400);
+        let height = client.size.1.min(300);
+        let stride = width.saturating_mul(4);
+        let bytes = stride.saturating_mul(height);
+        let mut file = tempfile::tempfile().unwrap();
+        let pixel = [140_u8, 40, 220, 255];
+        let count = usize::try_from(width.saturating_mul(height)).unwrap();
+        let buffer_bytes: Vec<u8> = pixel.into_iter().cycle().take(count.saturating_mul(4)).collect();
+        file.write_all(&buffer_bytes).unwrap();
+        let pool = shm.create_pool(file.as_fd(), bytes, &handle, ());
+        let buffer = pool.create_buffer(0, width, height, stride, wl_shm::Format::Argb8888, &handle, ());
+        xdg.set_window_geometry(0, 0, width, height);
+        surface.attach(Some(&buffer), 0, 0);
+        surface.damage_buffer(0, 0, width, height);
+        surface.commit();
+        let _dispatched = queue.roundtrip(&mut client).unwrap();
+        ready.send(()).unwrap();
+        let _stopped = stop.recv();
     }
 }

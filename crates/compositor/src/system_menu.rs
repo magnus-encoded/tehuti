@@ -111,6 +111,7 @@ impl Config {
             | Command::StopRecording
             | Command::ToggleRecording
             | Command::Screenshot
+            | Command::ScreenshotWindow
             | Command::Settings
             | Command::CloseHolder
             | Command::Custom(_) => None,
@@ -152,6 +153,7 @@ impl Config {
             | Command::StopRecording
             | Command::ToggleRecording
             | Command::Screenshot
+            | Command::ScreenshotWindow
             | Command::CloseHolder
             | Command::Settings => command.label().into(),
         }
@@ -170,6 +172,7 @@ impl Config {
             | Command::StopRecording
             | Command::ToggleRecording
             | Command::Screenshot
+            | Command::ScreenshotWindow
             | Command::CloseHolder
             | Command::Settings => self.commands.get(command.key()),
         };

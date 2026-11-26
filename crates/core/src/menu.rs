@@ -14,6 +14,7 @@ pub enum Command {
     Settings,
     CloseHolder,
     Screenshot,
+    ScreenshotWindow,
     StartRecording,
     StopRecording,
     ToggleRecording,
@@ -42,6 +43,7 @@ impl Command {
             Self::Settings => ("settings", "SETTINGS"),
             Self::CloseHolder => ("close_holder", "CLOSE DISPLAY HOLDER"),
             Self::Screenshot => ("screenshot", "SCREENSHOT"),
+            Self::ScreenshotWindow => ("screenshot_window", "SCREENSHOT WINDOW"),
             Self::StartRecording => ("start_recording", "START RECORDING"),
             Self::ToggleRecording => ("toggle_recording", "START RECORDING"),
             Self::StopRecording => ("stop_recording", "STOP RECORDING"),
@@ -62,6 +64,55 @@ pub const ITEMS: [Command; 10] = [
     Command::Screenshot,
     Command::ToggleRecording,
 ];
+
+/// The capture command a spoken phrase names, when it matches one of Tehuti's unit phrases.
+#[must_use]
+pub fn capture_phrase(phrase: &str) -> Option<Command> {
+    match tehuti_protocol::normalize_phrase(phrase).as_str() {
+        "screenshot" => Some(Command::Screenshot),
+        "screenshot window" => Some(Command::ScreenshotWindow),
+        "start recording" => Some(Command::StartRecording),
+        "stop recording" => Some(Command::StopRecording),
+        _ => None,
+    }
+}
+
+/// Ordered capture choices; each option's name is the exact phrase voice uses for it.
+#[must_use]
+pub const fn capture_options(recording: bool) -> [(Command, &'static str, &'static str); 3] {
+    let record = if recording {
+        (Command::StopRecording, "Stop recording", "Save current recording")
+    } else {
+        (
+            Command::StartRecording,
+            "Start recording",
+            "Record screen and audio",
+        )
+    };
+    [
+        (Command::Screenshot, "Screenshot", "Whole screen"),
+        (Command::ScreenshotWindow, "Screenshot window", "Focused window"),
+        record,
+    ]
+}
+
+/// Choice list slots for the capture picker opened by the pad chord.
+#[must_use]
+pub fn capture_choice_slots(recording: bool) -> crate::choice_list::Slots {
+    let candidates = capture_options(recording)
+        .into_iter()
+        .map(|(_, name, detail)| crate::choice_list::Candidate {
+            name: name.into(),
+            meta: Some(detail.into()),
+        })
+        .collect();
+    crate::choice_list::Slots {
+        title: "Capture".into(),
+        candidates,
+        action: "Run".into(),
+        ..crate::choice_list::Slots::default()
+    }
+}
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Menu {
@@ -164,6 +215,7 @@ impl Menu {
                 Command::TaskMonitor
                     | Command::Settings
                     | Command::Screenshot
+                    | Command::ScreenshotWindow
                     | Command::StartRecording
                     | Command::StopRecording
                     | Command::ToggleRecording

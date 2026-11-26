@@ -1112,9 +1112,9 @@ impl Compositor {
         // Guide reaches the application only at the app level and only when the context forwards it.
         let guide_forwarded = self.dispatch.core().guide_forwarded();
         let local_guide = button == tehuti_protocol::ButtonName::Guide && !guide_forwarded;
-        // Start pressed while Guide is held belongs to the escape chord in every mode, and so does its release.
-        let chord_start = match owner {
-            Some(Owner::Tehuti(Why::ChordStart)) => {
+        // Start or right bumper pressed while Guide is held belongs to a Guide chord, and so does its release.
+        let chord_button = match owner {
+            Some(Owner::Tehuti(Why::ChordStart | Why::GuideCaptureChord)) => {
                 if !chorded {
                     self.chord_buttons.push(button);
                 }
@@ -1126,7 +1126,7 @@ impl Compositor {
                 chorded
             }
         };
-        talk || plugin || local_guide || chord_start
+        talk || plugin || local_guide || chord_button
     }
 
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {
@@ -1721,6 +1721,7 @@ impl Compositor {
                 .keyboard()
                 .application_anchor()
                 .map(|anchor| (self.dispatch.keyboard().caret(), anchor));
+            self.dispatch.set_recording(self.recording_active());
             let (next, effects) = tehuti_core::dispatch::step(core::mem::take(&mut self.dispatch), input);
             self.dispatch = next;
             if let Some(previous) = previous {
@@ -2389,11 +2390,11 @@ impl Compositor {
             self.stop_recording();
             return;
         }
-        if command == tehuti_core::menu::Command::Screenshot {
-            match crate::screenshot::save(self) {
-                Ok(path) => self.show_notice(&format!("SCREENSHOT SAVED: {}", path.display())),
-                Err(error) => self.show_notice(&format!("SCREENSHOT FAILED: {error}")),
-            }
+        if matches!(
+            command,
+            tehuti_core::menu::Command::Screenshot | tehuti_core::menu::Command::ScreenshotWindow
+        ) {
+            self.save_screenshot(command == tehuti_core::menu::Command::ScreenshotWindow);
             return;
         }
         if command == tehuti_core::menu::Command::Restart {
@@ -2430,6 +2431,18 @@ impl Compositor {
             let label = self.menu_config.label(command);
             tracing::warn!(?command, %error, "system menu command failed");
             self.show_notice(&format!("{label} FAILED: {error}"));
+        }
+    }
+
+    fn save_screenshot(&mut self, window: bool) {
+        let saved = if window {
+            crate::screenshot::save_window(self)
+        } else {
+            crate::screenshot::save(self)
+        };
+        match saved {
+            Ok(path) => self.show_notice(&format!("SCREENSHOT SAVED: {}", path.display())),
+            Err(error) => self.show_notice(&format!("SCREENSHOT FAILED: {error}")),
         }
     }
 
@@ -3492,6 +3505,45 @@ impl Compositor {
     }
 
     #[must_use]
+    /// The focused mapped window's bounds in physical output pixels, for window screenshots.
+    pub(crate) fn focused_window_capture_bounds(&self) -> Option<(i32, i32, i32, i32)> {
+        use smithay::utils::Rectangle;
+        let output = self.output.as_ref()?;
+        let placed = self.placement.placed(|_| 0.0);
+        let focused = placed.iter().find(|placed| placed.focused)?;
+        let window = focused.window;
+        if !window.mapped() {
+            return None;
+        }
+        let location = self.space.element_location(window)?;
+        let area = self.space.output_geometry(output)?;
+        let size = window.client_geometry().size;
+        let layout = window.layout_size();
+        let width = if layout.w > 0 {
+            size.w.min(layout.w)
+        } else {
+            size.w
+        };
+        let height = if layout.h > 0 {
+            size.h.min(layout.h)
+        } else {
+            size.h
+        };
+        if width <= 0 || height <= 0 {
+            return None;
+        }
+        let bounds = Rectangle::new(
+            (
+                location.x.saturating_sub(area.loc.x),
+                location.y.saturating_sub(area.loc.y),
+            )
+                .into(),
+            (width, height).into(),
+        );
+        let physical = bounds.to_physical_precise_round(output.current_scale().fractional_scale());
+        Some((physical.loc.x, physical.loc.y, physical.size.w, physical.size.h))
+    }
+
     pub fn focus_outline(
         &self,
         output: &Output,
