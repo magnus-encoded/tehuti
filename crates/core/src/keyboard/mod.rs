@@ -627,9 +627,10 @@ impl Keyboard {
 
     /// Closes, keeping the draft only when configured; consumed releases stay consumed.
     pub fn close(&mut self) {
-        if let Some(session) = self.session.take() {
-            self.summaries.push(session);
-        }
+        let Some(session) = self.session.take() else {
+            return;
+        };
+        self.summaries.push(session);
         self.revealed = None;
         if !self.synced() && self.draft_retention == DraftRetention::Discard {
             self.draft.clear();
