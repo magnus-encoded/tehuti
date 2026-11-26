@@ -59,6 +59,8 @@ pub struct Bar {
     feedback: Option<Segment>,
     status: Option<String>,
     recording: bool,
+    update_available: bool,
+    update_focused: bool,
     navigation: Option<Segment>,
     remaining: Option<Duration>,
     level: crate::Level,
@@ -144,6 +146,8 @@ impl Bar {
             feedback: None,
             status: None,
             recording: false,
+            update_available: false,
+            update_focused: false,
             navigation: None,
             remaining: None,
             level: crate::Level::App,
@@ -276,9 +280,61 @@ impl Bar {
                 tone: Tone::Error,
             });
         }
+        if self.update_available {
+            segments.push(Segment {
+                text: crate::update::BAR_CHIP_LABEL.into(),
+                tone: Tone::Live,
+            });
+        }
         segments.extend(self.feedback.clone());
         segments.extend(self.navigation.clone());
         segments
+    }
+
+    /// Shows or hides the bar's `Update` chip and its D-pad focus highlight.
+    pub const fn set_update(&mut self, available: bool, focused: bool) {
+        self.update_available = available;
+        self.update_focused = available && focused;
+    }
+
+    /// Returns a copy with the `Update` chip visibility and focus highlight applied.
+    #[must_use]
+    pub const fn with_update(mut self, available: bool, focused: bool) -> Self {
+        self.set_update(available, focused);
+        self
+    }
+
+    /// True while the bar's `Update` chip is visible and focused by the D-pad.
+    #[must_use]
+    pub const fn update_focused(&self) -> bool {
+        self.update_available && self.update_focused
+    }
+
+    /// The segment index of the `Update` chip, when it is visible.
+    #[must_use]
+    pub fn update_segment(&self) -> Option<usize> {
+        if !self.update_available {
+            return None;
+        }
+        let mut index = if self.level == crate::Level::Columns && !self.windows.is_empty() {
+            self.windows.len()
+        } else {
+            1
+        };
+        if self.level == crate::Level::App
+            && let Some((_, title)) = &self.focus
+            && !title.is_empty()
+            && self.context.as_deref() != Some(title.as_str())
+        {
+            index = index.saturating_add(1);
+        }
+        if self.level == crate::Level::App && self.status.is_some() {
+            index = index.saturating_add(1);
+        }
+        if self.recording {
+            index = index.saturating_add(1);
+        }
+        Some(index)
     }
 
     /// Keeps the recording indicator visible at every navigation level.

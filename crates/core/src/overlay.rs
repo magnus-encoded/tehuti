@@ -4,6 +4,7 @@
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Overlay {
     Cursor,
+    UpdateConfirmation,
     Settings,
     SystemMenu,
     Adjuster,
@@ -19,8 +20,9 @@ pub enum Overlay {
 }
 
 /// Topmost first. Spatial placement of controls follows ADR 0005.
-pub const STACK: [Overlay; 13] = [
+pub const STACK: [Overlay; 14] = [
     Overlay::Cursor,
+    Overlay::UpdateConfirmation,
     Overlay::Settings,
     Overlay::SystemMenu,
     Overlay::ChoiceList,

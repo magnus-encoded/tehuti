@@ -250,6 +250,10 @@ impl State {
         &self.bar
     }
 
+    pub(crate) const fn set_bar_update(&mut self, available: bool, focused: bool) {
+        self.bar.set_update(available, focused);
+    }
+
     pub fn capture(
         &mut self,
         state: speech::SpeechState,
@@ -807,7 +811,7 @@ const NO_MAPPING_NOTICE: &str = "NO SPEECH MAPPING";
 /// mapping, built-in or fuzzy match takes the phrase.
 #[must_use]
 pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<String>> {
-    if phrase.trim().is_empty() {
+    if phrase.trim().is_empty() || update::parse_phrase(phrase).is_some() {
         return None;
     }
     let focused = focused_context(state);
@@ -998,6 +1002,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         }
         let phrase = text.as_str();
         if unit_verbs::launcher_request(phrase).is_some()
+            || update::parse_phrase(phrase).is_some()
             || matches!(
                 tehuti_protocol::normalize_phrase(phrase).as_str(),
                 "start recording" | "stop recording"
@@ -1294,6 +1299,7 @@ pub mod shadowing;
 pub mod speech;
 pub mod tool_words;
 pub mod unit_verbs;
+pub mod update;
 pub mod verbs;
 
 pub mod plugin;

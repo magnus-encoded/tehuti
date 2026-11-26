@@ -126,6 +126,12 @@ pub enum Input {
     SpeechSent(bool),
     /// Reply to [`Effect::PollSpeech`].
     SpeechPolled(Vec<SpeechInput>),
+    /// Release and fallback versions read from disk or `tehuti-update --check`.
+    ReleaseInfo(crate::update::ReleaseInfo),
+    /// Repeated failed starts detected; offer rollback when a previous version exists.
+    OfferRollback,
+    /// Completion of `tehuti-update` or `tehuti-update --rollback`.
+    UpdateFinished(crate::update::Outcome),
     /// Continues the waiting frame after effects without a reply.
     Resume,
 }
@@ -256,6 +262,12 @@ pub enum Effect {
         /// The phrase the transcript matched only fuzzily, when that match routed it.
         fuzzy: Option<tehuti_protocol::FuzzyMatch>,
     },
+    /// Runs `tehuti-update` after confirmation.
+    ApplyUpdate,
+    /// Runs `tehuti-update --rollback` after confirmation.
+    ApplyRollback,
+    /// Shows a short notice for an unavailable or already-running update action.
+    UpdateNotice(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -337,6 +349,7 @@ pub struct State {
     adjuster_buttons: Vec<ButtonName>,
     /// The left stick's last vertical sample, so a gauge opens already moving.
     adjuster_stick: i16,
+    update: crate::update::UpdateState,
 }
 
 impl State {
@@ -369,14 +382,34 @@ impl State {
             adjusters: Vec::new(),
             adjuster_buttons: Vec::new(),
             adjuster_stick: 0,
+            update: crate::update::UpdateState::default(),
         }
     }
 
     #[must_use]
     pub fn overlay_owns_pad(&self) -> bool {
-        self.adjuster.is_some()
+        self.update.confirmation().is_some()
+            || self.update.chip_focused()
+            || self.adjuster.is_some()
             || self.volume_pending == crate::adjuster::VolumeRead::Pending
             || (self.tool_pad == ToolPad::Held && (self.keyboard.is_open() || self.mouse.active()))
+    }
+
+    /// Release badge, bar chip focus and update confirmation state.
+    #[must_use]
+    pub const fn update(&self) -> &crate::update::UpdateState {
+        &self.update
+    }
+
+    /// Overlay prompt for a pending update or rollback confirmation, when open.
+    #[must_use]
+    pub fn update_confirmation_text(&self) -> Option<String> {
+        self.update.confirmation_text(self.core.pad_family())
+    }
+
+    fn sync_bar_update(&mut self) {
+        self.core
+            .set_bar_update(self.update.available().is_some(), self.update.chip_focused());
     }
 
     #[must_use]
@@ -735,6 +768,25 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             state.choice_list = Some(crate::choice_list::List::new(slots));
             (state, Vec::new())
         }
+        Input::ReleaseInfo(info) => {
+            state.settings.configure_previous_version(info.previous.clone());
+            state.update.set_info(info);
+            state.sync_bar_update();
+            (state, Vec::new())
+        }
+        Input::OfferRollback => {
+            state.update.offer_failed_start_rollback();
+            state.sync_bar_update();
+            (state, Vec::new())
+        }
+        Input::UpdateFinished(outcome) => {
+            state.update.finish(outcome);
+            state
+                .settings
+                .configure_previous_version(state.update.previous().map(str::to_owned));
+            state.sync_bar_update();
+            (state, Vec::new())
+        }
         input @ (Input::DisplayModes { .. }
         | Input::BarFont(_)
         | Input::DisplayScale(_)
@@ -830,6 +882,9 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::SecretConfirmation(_)
         | Input::SpeechSent(_)
         | Input::SpeechPolled(_)
+        | Input::ReleaseInfo(_)
+        | Input::OfferRollback
+        | Input::UpdateFinished(_)
         | Input::Resume => Vec::new(),
     };
     run_tasks(state, tasks, Vec::new())
@@ -845,11 +900,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
             changed,
             kind,
         } => {
-            update_text_field(&mut state, *active, *changed, *kind);
-            if !active {
-                state.keyboard.set_surrounding(None);
-            }
-            if state.keyboard.password_field_active() {
+            if apply_text_field(&mut state, *active, *changed, *kind) {
                 return run_tasks(state, vec![Task::Speech(SpeechInput::Cancel)], effects);
             }
         }
@@ -890,6 +941,9 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::SecretConfirmation(_)
         | Input::SpeechSent(_)
         | Input::SpeechPolled(_)
+        | Input::ReleaseInfo(_)
+        | Input::OfferRollback
+        | Input::UpdateFinished(_)
         | Input::Resume => {}
     }
     (state, effects)
@@ -904,6 +958,10 @@ fn run_tasks(mut state: State, tasks: Vec<Task>, effects: Vec<Effect>) -> (State
 }
 
 /// Inputs that only update the settings view.
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive match over every dispatch Input variant"
+)]
 fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {
@@ -961,6 +1019,9 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::SecretConfirmation(_)
         | Input::SpeechSent(_)
         | Input::SpeechPolled(_)
+        | Input::ReleaseInfo(_)
+        | Input::OfferRollback
+        | Input::UpdateFinished(_)
         | Input::FocusTitle { .. }
         | Input::Resume => {}
     }
@@ -990,6 +1051,8 @@ fn disconnect_controller(state: &mut State, effects: &mut Vec<Effect>) {
     release_pad(state, Handoff::Disconnect, effects);
     state.opening_button = None;
     state.choice_buttons.clear();
+    state.update.controller_disconnected();
+    state.sync_bar_update();
     state.core.controller_disconnected();
 }
 
@@ -998,6 +1061,19 @@ fn update_sticks(state: &mut State, sticks: Sticks) {
         state.keyboard.left_stick(sticks.left.0, sticks.left.1);
         state.mouse.sticks = sticks;
     }
+}
+
+fn apply_text_field(
+    state: &mut State,
+    active: bool,
+    changed: bool,
+    kind: crate::keyboard::FieldKind,
+) -> bool {
+    update_text_field(state, active, changed, kind);
+    if !active {
+        state.keyboard.set_surrounding(None);
+    }
+    state.keyboard.password_field_active()
 }
 
 fn update_text_field(state: &mut State, active: bool, changed: bool, kind: crate::keyboard::FieldKind) {
@@ -1062,15 +1138,19 @@ fn release_layer(state: &mut State, layer: Overlay, handoff: Handoff, effects: &
         }
         Overlay::Mouse => release_pointer(state, handoff, effects),
         Overlay::Application => release_held_keys(state, effects),
+        Overlay::Bar => {
+            state.update.blur_chip();
+            state.sync_bar_update();
+        }
         Overlay::Cursor
+        | Overlay::UpdateConfirmation
         | Overlay::Settings
         | Overlay::ChoiceList
         | Overlay::SystemMenu
         | Overlay::Secret
         | Overlay::SecretUnavailable
         | Overlay::Notice
-        | Overlay::MouseNotice
-        | Overlay::Bar => {}
+        | Overlay::MouseNotice => {}
     }
 }
 
@@ -1112,6 +1192,7 @@ fn open_overlays(state: &State) -> Vec<Overlay> {
     STACK
         .into_iter()
         .filter(|layer| match layer {
+            Overlay::UpdateConfirmation => state.update.confirmation().is_some(),
             Overlay::Adjuster => {
                 state.adjuster.is_some() || state.volume_pending == crate::adjuster::VolumeRead::Pending
             }
@@ -1119,13 +1200,13 @@ fn open_overlays(state: &State) -> Vec<Overlay> {
             Overlay::ChoiceList => state.choice_list_open(),
             Overlay::SystemMenu => state.core.menu().is_some(),
             Overlay::Secret => state.secret_prompt == SecretPrompt::Visible,
+            Overlay::Bar => state.update.chip_focused(),
             Overlay::Keyboard => state.keyboard.is_open(),
             Overlay::Mouse => state.mouse.active(),
             Overlay::Cursor
             | Overlay::SecretUnavailable
             | Overlay::Notice
             | Overlay::MouseNotice
-            | Overlay::Bar
             | Overlay::Application => false,
         })
         .collect()
@@ -1596,7 +1677,19 @@ fn stick_tick(
 }
 
 fn settings_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
-    state.settings.event(event, effects)
+    let start = effects.len();
+    let handled = state.settings.event(event, effects);
+    if effects
+        .get(start..)
+        .is_some_and(|added| added.contains(&Effect::ApplyRollback))
+    {
+        if !state.update.start_running() {
+            effects.retain(|effect| !matches!(effect, Effect::ApplyRollback));
+            effects.push(Effect::UpdateNotice("UPDATE ALREADY RUNNING".into()));
+        }
+        state.sync_bar_update();
+    }
+    handled
 }
 
 fn route_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
@@ -1659,6 +1752,8 @@ fn guide_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
         }
     ) {
         state.settings.close(effects);
+        state.update.cancel();
+        state.sync_bar_update();
     }
     let _response = state.keyboard.button(ButtonName::Guide, start_state(event), true);
     if let Some(actions) = crate::escape_chord(&mut state.core, event) {
@@ -1667,6 +1762,11 @@ fn guide_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) {
 }
 
 fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    if let Event::Button { name, state: button } = event
+        && state.update.consume_held_release(*name, *button)
+    {
+        return true;
+    }
     if let Event::Button {
         name,
         state: ButtonState::Released,
@@ -1735,6 +1835,7 @@ fn overlay_input(
     effects: &mut Vec<Effect>,
 ) -> bool {
     match layer {
+        Overlay::UpdateConfirmation => update_confirmation_input(state, event, effects),
         Overlay::ChoiceList => {
             if state
                 .launcher
@@ -1750,15 +1851,83 @@ fn overlay_input(
         Overlay::Settings => settings_input_layer(state, event, dictation, effects),
         Overlay::SystemMenu => !dictation && system_menu(state, event, effects),
         Overlay::Secret => secret_input(state, event),
+        Overlay::Bar => bar_update_input(state, event, dictation),
         Overlay::Keyboard => keyboard(state, event, effects),
         Overlay::Mouse => mouse_event(state, event, effects),
         Overlay::Application
         | Overlay::Cursor
         | Overlay::SecretUnavailable
         | Overlay::Notice
-        | Overlay::MouseNotice
-        | Overlay::Bar => false,
+        | Overlay::MouseNotice => false,
     }
+}
+
+fn update_phrase(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    use crate::update::{Phrase, RequestOutcome, parse_phrase};
+    let Event::Speech { text } = event else {
+        return false;
+    };
+    let Some(phrase) = parse_phrase(text.as_str()) else {
+        return false;
+    };
+    let outcome = match phrase {
+        Phrase::Update => state.update.request_update(false),
+        Phrase::PreviousVersion => state.update.request_rollback(false),
+    };
+    match (phrase, outcome) {
+        (_, RequestOutcome::Prompted) => {}
+        (Phrase::Update, RequestOutcome::Unavailable) => {
+            effects.push(Effect::UpdateNotice("NO UPDATE AVAILABLE".into()));
+        }
+        (Phrase::PreviousVersion, RequestOutcome::Unavailable) => {
+            effects.push(Effect::UpdateNotice("NO PREVIOUS VERSION AVAILABLE".into()));
+        }
+        (_, RequestOutcome::AlreadyRunning) => {
+            effects.push(Effect::UpdateNotice("UPDATE ALREADY RUNNING".into()));
+        }
+    }
+    state.sync_bar_update();
+    true
+}
+
+fn update_confirmation_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
+    use crate::update::ConfirmationAction;
+    if state.update.confirmation().is_none() {
+        return false;
+    }
+    match event {
+        Event::Button { name, state: button } => {
+            let action = state
+                .update
+                .confirmation_button(state.core.pad_family(), *name, *button);
+            match action {
+                ConfirmationAction::ApplyUpdate => effects.push(Effect::ApplyUpdate),
+                ConfirmationAction::ApplyRollback => effects.push(Effect::ApplyRollback),
+                ConfirmationAction::Cancelled | ConfirmationAction::Consumed => {}
+            }
+            state.sync_bar_update();
+            true
+        }
+        Event::Speech { .. } => true,
+        Event::Focus { .. } | Event::Tick { .. } => false,
+    }
+}
+
+fn bar_update_input(state: &mut State, event: &Event, dictation: bool) -> bool {
+    if dictation || (!state.update.chip_focused() && (state.keyboard.is_open() || state.mouse.active())) {
+        return false;
+    }
+    let Event::Button { name, state: button } = event else {
+        return false;
+    };
+    if state.core.push_to_talk(*name) {
+        return false;
+    }
+    let action = state
+        .update
+        .bar_button(state.core.pad_family(), state.core.level(), *name, *button);
+    state.sync_bar_update();
+    action == crate::update::BarAction::Consumed
 }
 
 fn launcher_event(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -> bool {
@@ -2034,6 +2203,12 @@ fn passthrough_view_talk(state: &mut State) {
 
 fn routed_controller(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if !password_suppresses(state, &event) && recording_event(&event, effects) {
+        return;
+    }
+    if !password_suppresses(state, &event)
+        && !state.keyboard.is_open()
+        && update_phrase(state, &event, effects)
+    {
         return;
     }
     // Released here, before any layer that consumes the release, so a held key never sticks.

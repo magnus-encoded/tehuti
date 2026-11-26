@@ -29,6 +29,7 @@ type Key = (
     i32,
     Option<(std::sync::Arc<[ticker::Entry]>, usize)>,
     tehuti_core::bar::Font,
+    Option<usize>,
 );
 
 #[derive(Debug, Default)]
@@ -89,23 +90,15 @@ impl Buffer {
         let segments = bar.segments();
         let unit = usize::try_from(scale).ok()?;
         let width = usize::try_from(mode.size.w).ok()?;
-        let layout = Layout::new(&segments, width, unit, bar.level(), bar.focused_window_segment());
-        let viewport = layout.ticker.1.saturating_sub(layout.ticker.0);
-        let ticker = bar
-            .ticker()
-            .filter(|_| viewport >= TICKER_MIN_WIDTH.saturating_mul(unit))
-            .map(|view| {
-                let zoom = unit.saturating_mul(TICKER_ZOOM);
-                let content = self.ticker_strip(&view.entries).width().saturating_mul(zoom);
-                let offset = ticker::scroll_offset(
-                    view.step,
-                    content,
-                    viewport,
-                    ticker::STEP_PIXELS.saturating_mul(zoom),
-                    ticker::REPEAT_GAP.saturating_mul(zoom),
-                );
-                (view.entries, offset)
-            });
+        let focused_update = bar.update_focused().then(|| bar.update_segment()).flatten();
+        let layout = Layout::new(
+            &segments,
+            width,
+            unit,
+            bar.level(),
+            focused_update.or_else(|| bar.focused_window_segment()),
+        );
+        let ticker = self.ticker_key(bar, &layout, unit);
         let key = (
             segments,
             bar.level(),
@@ -115,6 +108,7 @@ impl Buffer {
             height,
             ticker,
             self.font,
+            focused_update,
         );
         if self.key.as_ref() != Some(&key) {
             self.image = raster(
@@ -128,6 +122,29 @@ impl Buffer {
         self.image
             .as_ref()
             .map(|buffer| (buffer, (0.0, f64::from(mode.size.h.saturating_sub(height)))))
+    }
+
+    fn ticker_key(
+        &mut self,
+        bar: &Bar,
+        layout: &Layout,
+        unit: usize,
+    ) -> Option<(std::sync::Arc<[ticker::Entry]>, usize)> {
+        let viewport = layout.ticker.1.saturating_sub(layout.ticker.0);
+        bar.ticker()
+            .filter(|_| viewport >= TICKER_MIN_WIDTH.saturating_mul(unit))
+            .map(|view| {
+                let zoom = unit.saturating_mul(TICKER_ZOOM);
+                let content = self.ticker_strip(&view.entries).width().saturating_mul(zoom);
+                let offset = ticker::scroll_offset(
+                    view.step,
+                    content,
+                    viewport,
+                    ticker::STEP_PIXELS.saturating_mul(zoom),
+                    ticker::REPEAT_GAP.saturating_mul(zoom),
+                );
+                (view.entries, offset)
+            })
     }
 
     /// The ticker drawn for `entries`, painted once per entry list.
@@ -280,7 +297,7 @@ fn raster(
     height: i32,
     strip: Option<&crate::ticker_strip::Strip>,
 ) -> Option<MemoryRenderBuffer> {
-    let (segments, _, clock, width, scale, _, ticker, font) = key;
+    let (segments, _, clock, width, scale, _, ticker, font, focused_update) = key;
     let height_usize = usize::try_from(height).ok()?;
     let mut canvas = Canvas {
         font: *font,
@@ -303,28 +320,14 @@ fn raster(
         canvas.ticker(strip, *offset, layout.ticker, unit);
     }
     for (index, start, end) in layout.chips.iter().rev() {
-        let Some(segment) = segments.get(*index) else {
-            continue;
-        };
-        if key.1 == tehuti_core::Level::Columns {
-            let limit = layout.scroll.saturating_add(layout.clock_start);
-            let end = (*end).min(limit);
-            canvas.rectangle(
-                start.saturating_sub(layout.scroll).min(layout.clock_start),
-                end.saturating_sub(layout.scroll),
-                colour(segment.tone),
+        if let Some(segment) = segments.get(*index) {
+            canvas.segment_chip(
+                key.1,
+                layout,
+                (*start, *end),
+                segment,
+                *focused_update == Some(*index),
             );
-            canvas.scrolled_text(
-                &segment.text,
-                (
-                    start.saturating_add(18usize.saturating_mul(unit)),
-                    end.saturating_sub(4usize.saturating_mul(unit)),
-                ),
-                unit,
-                layout.scroll,
-            );
-        } else {
-            canvas.chip(*start, *end, segment, layout.arrow, layout.clock_start, unit);
         }
     }
     Some(MemoryRenderBuffer::from_slice(
@@ -345,6 +348,41 @@ struct Canvas {
 }
 
 impl Canvas {
+    fn segment_chip(
+        &mut self,
+        level: tehuti_core::Level,
+        layout: &Layout,
+        span: (usize, usize),
+        segment: &Segment,
+        focused: bool,
+    ) {
+        let (start, end) = span;
+        let unit = layout.unit;
+        if level == tehuti_core::Level::Columns {
+            let limit = layout.scroll.saturating_add(layout.clock_start);
+            let clipped_end = end.min(limit);
+            let draw_start = start.saturating_sub(layout.scroll).min(layout.clock_start);
+            let draw_end = clipped_end.saturating_sub(layout.scroll);
+            self.rectangle(draw_start, draw_end, colour(segment.tone));
+            if focused {
+                self.focus_border(draw_start, draw_end, unit);
+            }
+            self.scrolled_text(
+                &segment.text,
+                (
+                    start.saturating_add(18usize.saturating_mul(unit)),
+                    clipped_end.saturating_sub(4usize.saturating_mul(unit)),
+                ),
+                unit,
+                layout.scroll,
+            );
+        } else {
+            self.chip(start, end, segment, layout.arrow, layout.clock_start, unit);
+            if focused {
+                self.focus_border(start, end, unit);
+            }
+        }
+    }
     fn chip(&mut self, start: usize, end: usize, segment: &Segment, arrow: usize, limit: usize, unit: usize) {
         let background = colour(segment.tone);
         self.rectangle(start, end, background);
@@ -383,6 +421,22 @@ impl Canvas {
         for row in 0..self.height {
             for column in start..end {
                 self.pixel(column, row, colour);
+            }
+        }
+    }
+
+    /// Highlights a D-pad-focused bar chip with a cyan border matching Settings focus.
+    fn focus_border(&mut self, start: usize, end: usize, unit: usize) {
+        const FOCUS_CYAN: [u8; 4] = [240, 218, 64, 255];
+        let thickness = 2usize.saturating_mul(unit).min(self.height / 2).max(1);
+        for row in 0..thickness {
+            for column in start..end {
+                self.pixel(column, row, FOCUS_CYAN);
+                self.pixel(
+                    column,
+                    self.height.saturating_sub(1).saturating_sub(row),
+                    FOCUS_CYAN,
+                );
             }
         }
     }

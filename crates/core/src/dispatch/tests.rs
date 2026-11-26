@@ -131,7 +131,10 @@ impl World {
                     | Effect::PluginRejected(_)
                     | Effect::SpeechFailed { .. }
                     | Effect::TranscriptReceived { .. }
-                    | Effect::SpeechRouted { .. } => {}
+                    | Effect::SpeechRouted { .. }
+                    | Effect::ApplyUpdate
+                    | Effect::ApplyRollback
+                    | Effect::UpdateNotice(_) => {}
                 }
             }
             if state.busy() <= depth {
@@ -6525,4 +6528,288 @@ fn restoring_clears_what_the_saved_files_no_longer_hold() {
         Input::ControllerBindings(std::collections::BTreeMap::new()),
     );
     assert!(state.settings().input.pads.is_empty());
+}
+
+fn has_update_chip(state: &State) -> bool {
+    state
+        .core()
+        .bar()
+        .segments()
+        .iter()
+        .any(|segment| segment.text == crate::update::BAR_CHIP_LABEL)
+}
+
+#[test]
+fn update_chip_appears_for_newer_release_and_disappears_after_update() {
+    use crate::update::{Outcome, ReleaseInfo};
+    let mut world = World::default();
+    let state = State::default();
+    assert!(
+        !has_update_chip(&state),
+        "no update chip before a newer release is known"
+    );
+    let state = world.run(
+        state,
+        Input::ReleaseInfo(ReleaseInfo {
+            installed: Some("v0.148.2".into()),
+            previous: None,
+            available: Some("v0.149.0".into()),
+        }),
+    );
+    assert!(has_update_chip(&state), "update chip shows the spoken unit name");
+    let state = world.run(state, speech_event("Update"));
+    let prompt = state
+        .update_confirmation_text()
+        .expect("voice Update opens confirmation");
+    assert!(
+        prompt.contains("UPDATE TO V0.149.0?"),
+        "confirmation names the target release: {prompt}"
+    );
+    assert!(
+        !world.trace.contains(&Effect::ApplyUpdate),
+        "voice alone never applies an update without confirmation"
+    );
+    let state = tap_button(&mut world, state, ButtonName::South);
+    assert!(
+        world.trace.contains(&Effect::ApplyUpdate),
+        "Confirm applies the update"
+    );
+    let state = world.run(
+        state,
+        Input::UpdateFinished(Outcome::Updated {
+            installed: Some("v0.149.0".into()),
+            previous: Some("v0.148.2".into()),
+        }),
+    );
+    assert!(!has_update_chip(&state), "chip disappears after update");
+    assert_eq!(state.settings().previous_version.as_deref(), Some("v0.148.2"));
+}
+
+#[test]
+fn back_cancels_voice_update_confirmation() {
+    use crate::update::ReleaseInfo;
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::ReleaseInfo(ReleaseInfo {
+            installed: Some("v0.148.2".into()),
+            previous: None,
+            available: Some("v0.149.0".into()),
+        }),
+    );
+    let state = world.run(state, speech_event("Update"));
+    assert!(
+        state.update_confirmation_text().is_some(),
+        "voice Update opens confirmation"
+    );
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(
+        state.update_confirmation_text().is_none(),
+        "Back cancels update confirmation"
+    );
+    assert!(
+        !world.trace.contains(&Effect::ApplyUpdate),
+        "cancelling never applies an update"
+    );
+}
+
+#[test]
+fn dpad_focuses_update_chip_and_confirm_requires_fresh_press() {
+    use crate::update::ReleaseInfo;
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::ReleaseInfo(ReleaseInfo {
+            installed: Some("v0.148.2".into()),
+            previous: None,
+            available: Some("v0.149.0".into()),
+        }),
+    );
+    let state = tap_button(&mut world, state, ButtonName::Guide);
+    assert_eq!(state.core().level(), crate::Level::Columns);
+    let state = tap_button(&mut world, state, ButtonName::DpadDown);
+    assert!(state.core().bar().update_focused(), "D-pad focuses bar chip");
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(!state.core().bar().update_focused(), "Back cancels chip focus");
+
+    let state = tap_button(&mut world, state, ButtonName::DpadDown);
+    world.trace.clear();
+    let state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
+    assert!(
+        state.update_confirmation_text().is_some() && !world.trace.contains(&Effect::ApplyUpdate),
+        "Confirm on the focused chip opens confirmation without running immediately"
+    );
+    let state = world.run(state, pad_button(ButtonName::South, ButtonState::Released));
+    assert!(
+        !world.trace.contains(&Effect::ApplyUpdate),
+        "releasing Confirm does not trigger the update"
+    );
+    let _state = tap_button(&mut world, state, ButtonName::South);
+    assert!(
+        world.trace.contains(&Effect::ApplyUpdate),
+        "fresh Confirm starts the update"
+    );
+    assert!(
+        !world.trace.contains(&Effect::Apply(Action::Key {
+            key: KeyName::Enter,
+            mods: Vec::new(),
+        })),
+        "confirmed bar update never leaks Enter to the focused app"
+    );
+}
+
+#[test]
+fn voice_previous_version_cannot_be_shadowed_and_requires_confirmation() {
+    use crate::update::ReleaseInfo;
+    let context = tehuti_protocol::parse_context(
+        "app_id = 'app'\n[speech]\n'previous version' = { text = 'wrong' }\n'update' = { text = 'wrong' }\n",
+    )
+    .expect("valid context");
+    let mut world = World::default();
+    let state = configured(vec![context], "app");
+    let state = world.run(
+        state,
+        Input::ReleaseInfo(ReleaseInfo {
+            installed: Some("v0.148.2".into()),
+            previous: Some("v0.148.1".into()),
+            available: None,
+        }),
+    );
+    world.trace.clear();
+    let state = world.run(state, speech_event("previous version"));
+    let prompt = state
+        .update_confirmation_text()
+        .expect("voice previous version opens rollback confirmation");
+    assert!(
+        prompt.contains("PREVIOUS VERSION V0.148.1?"),
+        "rollback prompt names the spoken unit and version: {prompt}"
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(Action::Text { .. }))),
+        "context mapping cannot shadow system phrase"
+    );
+    let state = tap_button(&mut world, state, ButtonName::South);
+    assert!(
+        world.trace.contains(&Effect::ApplyRollback),
+        "Confirm starts rollback"
+    );
+
+    world.trace.clear();
+    let _state = world.run(state, speech_event("update"));
+    assert!(
+        world
+            .trace
+            .contains(&Effect::UpdateNotice("UPDATE ALREADY RUNNING".into())),
+        "re-requesting while running reports status instead of leaking to context"
+    );
+}
+
+#[test]
+fn settings_previous_version_row_steps_and_requires_confirmation() {
+    use crate::update::ReleaseInfo;
+    let mut world = World::default();
+    let state = settings_event(
+        &mut world,
+        State::default(),
+        Event::Speech {
+            text: Text::new("Pop the hood.".into()).unwrap(),
+        },
+    );
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    assert_eq!(
+        state.settings().category,
+        Category::Wallpaper,
+        "without a previous version stepping stops at Wallpaper"
+    );
+
+    let state = world.run(
+        state,
+        Input::ReleaseInfo(ReleaseInfo {
+            installed: Some("v0.148.2".into()),
+            previous: Some("v0.148.1".into()),
+            available: None,
+        }),
+    );
+    let state = settings_button(&mut world, state, ButtonName::DpadDown);
+    assert_eq!(state.settings().category, Category::PreviousVersion);
+    world.trace.clear();
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert!(
+        state.settings().pending_rollback,
+        "first Confirm enters rollback confirmation"
+    );
+    assert!(
+        !world.trace.contains(&Effect::ApplyRollback),
+        "rollback waits for confirmation"
+    );
+    let state = settings_button(&mut world, state, ButtonName::East);
+    assert!(
+        !state.settings().pending_rollback && state.settings().open,
+        "Back cancels rollback confirmation without closing Settings"
+    );
+    let state = settings_button(&mut world, state, ButtonName::South);
+    let state = settings_button(&mut world, state, ButtonName::South);
+    assert!(
+        world.trace.contains(&Effect::ApplyRollback),
+        "second Confirm starts rollback"
+    );
+    assert!(
+        !state.settings().open,
+        "Settings closes after confirming rollback"
+    );
+}
+
+#[test]
+fn repeated_failed_starts_offer_rollback_above_launcher_invitation() {
+    use crate::update::ReleaseInfo;
+    let mut world = World::default();
+    let launcher = crate::launcher::Launcher::new(
+        "notes",
+        vec![crate::launcher::Destination {
+            name: "Notes".into(),
+            extra_names: Vec::new(),
+            route: "book".into(),
+            open: false,
+            focused: false,
+            safety: crate::launcher::Safety::Launch,
+            settings: false,
+        }],
+        Some(1000),
+    );
+    let state = world.run(State::default(), Input::Launcher(Box::new(launcher)));
+    let state = world.run(
+        state,
+        Input::ReleaseInfo(ReleaseInfo {
+            installed: Some("v0.148.2".into()),
+            previous: Some("v0.148.1".into()),
+            available: None,
+        }),
+    );
+    let state = world.run(state, Input::OfferRollback);
+    let prompt = state
+        .update_confirmation_text()
+        .expect("failed starts auto-offer rollback");
+    assert!(
+        prompt.contains("REPEATED FAILED STARTS") && prompt.contains("PREVIOUS VERSION V0.148.1?"),
+        "auto-offer prompt explains the reason and names the version: {prompt}"
+    );
+    world.trace.clear();
+    let _state = tap_button(&mut world, state, ButtonName::South);
+    assert!(
+        world.trace.contains(&Effect::ApplyRollback),
+        "Confirm accepts the auto-offered rollback"
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::ChooseLauncher(_))),
+        "launcher invitation beneath never steals Confirm"
+    );
 }
