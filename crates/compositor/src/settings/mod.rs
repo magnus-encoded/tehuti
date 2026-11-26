@@ -25,6 +25,8 @@ struct View {
     page: Page,
     category: Category,
     input: tehuti_core::dispatch::InputSettings,
+    toggles: tehuti_core::toggles::Toggles,
+    toggles_focus: usize,
     speech: String,
     hint: String,
     display_focus: tehuti_core::tiles::Focus,
@@ -47,6 +49,8 @@ impl View {
             page: settings.page,
             category: settings.category,
             input: settings.input.clone(),
+            toggles: settings.toggles.clone(),
+            toggles_focus: settings.toggles_focus,
             speech: speech.to_owned(),
             hint: settings.button_hint(),
             display_focus: settings.display_focus,
@@ -149,6 +153,7 @@ impl Canvas {
             Page::Display => self.display(settings),
             Page::Input => self.input(settings, speech),
             Page::Wallpaper => self.wallpaper(settings),
+            Page::Toggles => self.toggles(settings),
         }
     }
 
@@ -167,6 +172,7 @@ impl Canvas {
                 Category::Display => ("DISPLAY", "RESOLUTION / REFRESH / SCALE / BAR FONT"),
                 Category::Input => ("INPUT", "CONTROLLER / MICROPHONE"),
                 Category::Wallpaper => ("WALLPAPER", "RELEASE COLLECTION"),
+                Category::Toggles => ("TOGGLES", "MODES / PLUGINS"),
             };
             self.text(96, y.saturating_add(20), name, 5, WHITE);
             self.text(600, y.saturating_add(32), detail, 3, CYAN);
@@ -266,13 +272,14 @@ pub fn buffer(settings: &Settings, speech: &str, size: (i32, i32)) -> Option<Mem
             Page::Display => "DISPLAY",
             Page::Input => "INPUT",
             Page::Wallpaper => "WALLPAPER",
+            Page::Toggles => "TOGGLES",
         },
         6,
         WHITE,
     );
     canvas.rectangle(80, 166, 1120, 2, CYAN);
-    // The Input page names its first row at the left, so the hood label moves right, clear of any row heading.
-    let hood_left = if settings.page == Page::Input {
+    // Input and Toggles name their first row at the left, so the hood label moves right, clear of any row heading.
+    let hood_left = if matches!(settings.page, Page::Input | Page::Toggles) {
         1200 - 12 * 12
     } else {
         80
@@ -343,6 +350,98 @@ mod tests {
         })?;
         let path = std::path::Path::new(&directory).join("input-page.png");
         image::save_buffer(path, &rgba, 1280, 720, image::ColorType::Rgba8)?;
+        Ok(())
+    }
+
+    fn save_bgra_screenshot(
+        mut buffer: smithay::backend::renderer::element::memory::MemoryRenderBuffer,
+        width: u32,
+        height: u32,
+        path: &std::path::Path,
+    ) -> Result<(), Box<dyn core::error::Error>> {
+        let mut rgba = Vec::new();
+        buffer.render().draw(|pixels| {
+            for pixel in pixels.as_chunks::<4>().0 {
+                rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
+            }
+            Ok::<_, Box<dyn core::error::Error>>(Vec::new())
+        })?;
+        image::save_buffer(path, &rgba, width, height, image::ColorType::Rgba8)?;
+        Ok(())
+    }
+
+    /// Writes the Toggles page and bar chips to `$SHOT_DIR` when set, for visual review.
+    #[test]
+    fn the_toggles_page_and_bar_can_be_written_as_screenshots() -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let Some(directory) = std::env::var_os("SHOT_DIR") else {
+            return Ok(());
+        };
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.show_fixture("toggles")?;
+        compositor.handle(&Event::Speech {
+            text: Text::new("Pop the hood.".into())?,
+        });
+        for name in [
+            ButtonName::DpadDown,
+            ButtonName::DpadDown,
+            ButtonName::DpadDown,
+            ButtonName::South,
+        ] {
+            for state in [ButtonState::Released, ButtonState::Pressed] {
+                compositor.handle(&Event::Button { name, state });
+            }
+        }
+        let buffer = compositor
+            .settings_buffer((1280, 720))
+            .ok_or("missing Toggles artwork")?;
+        save_bgra_screenshot(
+            buffer,
+            1280,
+            720,
+            &std::path::Path::new(&directory).join("toggles-page.png"),
+        )?;
+
+        for name in [
+            ButtonName::East,
+            ButtonName::East,
+            ButtonName::Guide,
+            ButtonName::DpadDown,
+        ] {
+            for state in [ButtonState::Pressed, ButtonState::Released] {
+                compositor.handle(&Event::Button { name, state });
+            }
+        }
+        let output = Output::new(
+            "toggles-bar-shot".into(),
+            PhysicalProperties {
+                size: (0, 0).into(),
+                subpixel: Subpixel::Unknown,
+                make: "Tehuti".into(),
+                model: "Test".into(),
+            },
+        );
+        output.change_current_state(
+            Some(Mode {
+                size: (1280, 720).into(),
+                refresh: 60_000,
+            }),
+            Some(Transform::Normal),
+            Some(Scale::Integer(1)),
+            None,
+        );
+        let mut bar_buffer = crate::bar::Buffer::default();
+        let bar = compositor.voice_bar();
+        let (memory, _) = bar_buffer
+            .update(&output, &bar, "12:34")
+            .ok_or("missing bar artwork")?;
+        save_bgra_screenshot(
+            memory.clone(),
+            1280,
+            32,
+            &std::path::Path::new(&directory).join("toggles-bar.png"),
+        )?;
         Ok(())
     }
 

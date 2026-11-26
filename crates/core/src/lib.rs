@@ -1301,6 +1301,7 @@ pub mod plugin;
 pub mod dispatch;
 
 pub mod tiles;
+pub mod toggles;
 
 pub mod controller;
 

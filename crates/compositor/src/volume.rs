@@ -12,12 +12,14 @@ use std::{
 pub enum Request {
     Read,
     Set(u8),
+    SetMicMute(bool),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Reply {
     Read(Result<u8, String>),
     Set(Result<(), String>),
+    MicMute(Result<(), String>),
 }
 
 #[derive(Debug)]
@@ -52,6 +54,14 @@ impl Backend {
                             "set-volume".into(),
                             "@DEFAULT_AUDIO_SINK@".into(),
                             format!("{}%", value.min(100)),
+                        ])
+                        .map(|_| ()),
+                    ),
+                    Request::SetMicMute(muted) => Reply::MicMute(
+                        run(&[
+                            "set-mute".into(),
+                            "@DEFAULT_AUDIO_SOURCE@".into(),
+                            if muted { "1" } else { "0" }.into(),
                         ])
                         .map(|_| ()),
                     ),

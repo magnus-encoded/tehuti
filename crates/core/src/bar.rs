@@ -38,6 +38,8 @@ pub enum Tone {
     Live,
     Result,
     Error,
+    Mode,
+    ModeFocused,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -59,6 +61,7 @@ pub struct Bar {
     feedback: Option<Segment>,
     status: Option<String>,
     recording: bool,
+    mode_chips: Vec<(String, bool)>,
     navigation: Option<Segment>,
     remaining: Option<Duration>,
     level: crate::Level,
@@ -144,6 +147,7 @@ impl Bar {
             feedback: None,
             status: None,
             recording: false,
+            mode_chips: Vec::new(),
             navigation: None,
             remaining: None,
             level: crate::Level::App,
@@ -276,9 +280,35 @@ impl Bar {
                 tone: Tone::Error,
             });
         }
+        for (label, focused) in &self.mode_chips {
+            segments.push(Segment {
+                text: label.clone(),
+                tone: if *focused { Tone::ModeFocused } else { Tone::Mode },
+            });
+        }
         segments.extend(self.feedback.clone());
         segments.extend(self.navigation.clone());
         segments
+    }
+
+    /// Active mode chips shown while their modes are active, with focus state.
+    #[must_use]
+    pub fn with_mode_chips(mut self, chips: Vec<(String, bool)>) -> Self {
+        self.mode_chips = chips;
+        self
+    }
+
+    pub(crate) fn set_mode_chips(&mut self, chips: Vec<(String, bool)>) {
+        self.mode_chips = chips;
+    }
+
+    /// The segment the columns bar should scroll into view: a focused mode chip, else the focused window.
+    #[must_use]
+    pub fn focused_bar_segment(&self) -> Option<usize> {
+        self.segments()
+            .iter()
+            .position(|segment| segment.tone == Tone::ModeFocused)
+            .or_else(|| self.focused_window_segment())
     }
 
     /// Keeps the recording indicator visible at every navigation level.

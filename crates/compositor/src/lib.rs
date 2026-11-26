@@ -98,6 +98,7 @@ pub mod adjuster;
 pub mod applications_watch;
 pub mod driver;
 mod driver_shot;
+pub mod idle_inhibit;
 pub mod menu_watch;
 pub mod volume;
 

@@ -81,6 +81,8 @@ pub(crate) enum Delivery {
     PadOverrides(Vec<tehuti_protocol::PadOverride>),
     /// The plugin replaced its speech hotwords.
     SpeechHints,
+    /// The plugin's registered mode toggles or their states changed.
+    Toggles,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -118,6 +120,8 @@ pub(crate) struct Session {
     pub(crate) invoke_words: Vec<String>,
     /// The standing dictation language this plugin set; gone with the session.
     pub(crate) language: Option<String>,
+    /// The plugin's registered mode toggles and their current states.
+    pub(crate) toggles: Vec<tehuti_protocol::Toggle>,
 }
 
 impl Session {
@@ -149,6 +153,7 @@ impl Session {
             hints: Vec::new(),
             invoke_words: Vec::new(),
             language: None,
+            toggles: manifest.toggles.clone(),
         };
         session.queue_initialize()?;
         Ok(session)
@@ -382,10 +387,10 @@ impl Session {
         }
     }
 
-    pub(crate) fn initialize_reply(&mut self, message: Message, now: Instant) {
+    pub(crate) fn initialize_reply(&mut self, message: Message, now: Instant) -> Vec<Delivery> {
         self.expire_initialize(now);
         if matches!(self.status, Status::Refused | Status::Failed) {
-            return;
+            return Vec::new();
         }
         if let Message::Response(response) = message
             && response.request_id == 0
@@ -417,8 +422,12 @@ impl Session {
                 {
                     tracing::warn!(%error, "plugin focus dropped");
                 }
+                if !self.toggles.is_empty() {
+                    return vec![Delivery::Toggles];
+                }
             }
         }
+        Vec::new()
     }
 
     pub(crate) fn notice_actions(&mut self, actions: Vec<Action>, now: Instant) -> Vec<Delivery> {
@@ -461,8 +470,7 @@ impl Session {
             return Vec::new();
         }
         if self.status != Status::Ready {
-            self.initialize_reply(message, now);
-            return Vec::new();
+            return self.initialize_reply(message, now);
         }
         self.complete_decision(&message, now);
         match message {
@@ -534,6 +542,19 @@ impl Session {
             Method::InvokeWords { words } => {
                 self.invoke_words = words;
                 vec![Delivery::SpeechHints]
+            }
+            Method::Toggles { toggles } => {
+                self.toggles = toggles;
+                vec![Delivery::Toggles]
+            }
+            Method::Toggle { name, active } => {
+                let normalized = tehuti_protocol::normalize_phrase(&name);
+                if let Some(toggle) = self.toggles.iter_mut().find(|toggle| toggle.name() == normalized) {
+                    toggle.set_active(active);
+                    vec![Delivery::Toggles]
+                } else {
+                    Vec::new()
+                }
             }
             Method::Adjuster { .. }
             | Method::Initialize(_)
@@ -614,6 +635,7 @@ mod tests {
     fn manifest() -> Manifest {
         Manifest {
             adjusters: Vec::new(),
+            toggles: Vec::new(),
             plugin_id: None,
             author: None,
             security_contact: None,

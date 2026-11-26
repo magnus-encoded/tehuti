@@ -64,6 +64,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::Volume(_)
         | DispatchInput::WindowSize(_)
         | DispatchInput::Adjusters(_)
+        | DispatchInput::PluginToggles(_)
         | DispatchInput::Launcher(_)
         | DispatchInput::CloseInvitation
         | DispatchInput::ChoiceList(_)
@@ -140,6 +141,7 @@ pub struct Compositor {
     recentre_requests: Vec<String>,
     input_choices: Option<crate::input_choice_store::Store>,
     volume: Option<crate::volume::Backend>,
+    idle_inhibit: Option<crate::idle_inhibit::Backend>,
     remote_host_listing: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
@@ -311,6 +313,7 @@ impl Compositor {
             recentre_requests: Vec::new(),
             input_choices: None,
             volume: None,
+            idle_inhibit: None,
             remote_host_listing: None,
             microphone_listing: None,
             injected_clock: None,
@@ -667,6 +670,31 @@ impl Compositor {
 
     pub fn set_plugins(&mut self, plugins: crate::plugins::Plugins) {
         self.plugins = Some(plugins);
+        self.sync_plugin_toggles();
+    }
+
+    pub fn set_idle_inhibit_backend(&mut self, backend: crate::idle_inhibit::Backend) {
+        self.idle_inhibit = Some(backend);
+    }
+
+    #[must_use]
+    pub const fn toggles(&self) -> &tehuti_core::toggles::Toggles {
+        self.dispatch.toggles()
+    }
+
+    #[must_use]
+    pub fn do_not_disturb(&self) -> bool {
+        self.dispatch
+            .toggles()
+            .builtin_active(tehuti_core::toggles::BuiltinMode::DoNotDisturb)
+    }
+
+    pub(crate) fn sync_plugin_toggles(&mut self) {
+        let registrations = self
+            .plugins
+            .as_ref()
+            .map_or_else(Vec::new, crate::plugins::Plugins::toggles);
+        let _rejection = self.dispatch(DispatchInput::PluginToggles(registrations));
     }
 
     pub fn set_secret_provider(&mut self, provider: Box<dyn tehuti_core::secret::SecretProvider>) {
@@ -1131,6 +1159,7 @@ impl Compositor {
 
     pub(crate) fn plugin_exited(&mut self, plugin: usize) {
         let _rejection = self.dispatch(DispatchInput::PluginExited { plugin });
+        self.sync_plugin_toggles();
         self.refresh_speech_vocabulary();
     }
 
@@ -2204,6 +2233,14 @@ impl Compositor {
                     "laptop.tail1234.ts.net".to_owned(),
                 ]));
             }
+            "toggles" => {
+                if let Ok(night_light) = tehuti_protocol::Toggle::new("night light", true) {
+                    let _rejection = self.dispatch(DispatchInput::PluginToggles(vec![(0, night_light)]));
+                }
+                if let Ok(text) = tehuti_protocol::Text::new("stay awake on".into()) {
+                    self.handle(&Event::Speech { text });
+                }
+            }
             _ => return Err(format!("unknown fixture {name}")),
         }
         Ok(())
@@ -2312,6 +2349,7 @@ impl Compositor {
             | DispatchEffect::ReadWindowSize(_)
             | DispatchEffect::SetWindowSize { .. }
             | DispatchEffect::AdjusterValue { .. }
+            | DispatchEffect::ModeToggleChanged { .. }
             | DispatchEffect::SettingsMode(_)
             | DispatchEffect::PersistMode(_)
             | DispatchEffect::SettingsBarFont(_)
@@ -2585,6 +2623,9 @@ impl Compositor {
                     plugins.adjuster_value(plugin, name, value, finished);
                 }
             }
+            DispatchEffect::ModeToggleChanged { owner, name, active } => {
+                self.apply_mode_toggle(owner, name, active);
+            }
             DispatchEffect::SettingsScale(scale) => self.persist_display_scale(scale),
             DispatchEffect::WallpaperPreview(index) => {
                 if let Err(error) = crate::wallpaper::preview(index) {
@@ -2695,6 +2736,7 @@ impl Compositor {
                 self.poll_remote_hosts();
                 self.poll_menu_failures();
                 self.poll_volume();
+                self.poll_idle_inhibit();
             }
             DispatchEffect::ConfirmPressed(pressed) => self.confirmation.confirm_pressed(pressed),
             DispatchEffect::ResetSecretFocus => {
@@ -2946,6 +2988,9 @@ impl Compositor {
     }
 
     fn show_notice(&mut self, text: &str) {
+        if self.do_not_disturb() {
+            return;
+        }
         let _effect = self.placement.window_action(tehuti_core::windows::Input::Notify);
         self.notice_text = Some(text.into());
         self.notice_until = self.clock_now().checked_add(core::time::Duration::from_secs(3));
@@ -4848,6 +4893,77 @@ impl Compositor {
                     self.show_notice("VOLUME UNAVAILABLE");
                 }
                 crate::volume::Reply::Set(Ok(())) => {}
+                crate::volume::Reply::MicMute(Err(error)) => {
+                    tracing::warn!(%error, "microphone mute failed");
+                }
+                crate::volume::Reply::MicMute(Ok(())) => {}
+            }
+        }
+    }
+
+    fn apply_mode_toggle(&mut self, owner: tehuti_core::toggles::Owner, name: String, active: bool) {
+        use tehuti_core::toggles::{BuiltinMode, Owner};
+        match owner {
+            Owner::Builtin(BuiltinMode::StayAwake) => self.set_stay_awake(active),
+            Owner::Builtin(BuiltinMode::MicrophoneMute) => self.mic_mute_request(active),
+            Owner::Builtin(BuiltinMode::DoNotDisturb) => {
+                if active {
+                    self.notice_text = None;
+                    self.notice_until = None;
+                }
+            }
+            Owner::Plugin(plugin) => {
+                if let Some(plugins) = &mut self.plugins {
+                    plugins.set_toggle(plugin, name, active);
+                }
+            }
+        }
+    }
+
+    fn mic_mute_request(&mut self, muted: bool) {
+        if self.volume.is_none() {
+            match crate::volume::Backend::start() {
+                Ok(backend) => self.volume = Some(backend),
+                Err(error) => {
+                    tracing::warn!(%error, "audio worker unavailable for microphone mute");
+                    return;
+                }
+            }
+        }
+        if let Some(backend) = &self.volume
+            && let Err(error) = backend.request(crate::volume::Request::SetMicMute(muted))
+        {
+            tracing::warn!(%error, "microphone mute request dropped");
+            self.volume = None;
+        }
+    }
+
+    fn set_stay_awake(&mut self, active: bool) {
+        if self.idle_inhibit.is_none() {
+            match crate::idle_inhibit::Backend::start() {
+                Ok(backend) => self.idle_inhibit = Some(backend),
+                Err(error) => {
+                    tracing::warn!(%error, "idle inhibitor worker unavailable");
+                    return;
+                }
+            }
+        }
+        if let Some(backend) = &self.idle_inhibit
+            && let Err(error) = backend.set(active)
+        {
+            tracing::warn!(%error, "idle inhibitor request dropped");
+            self.idle_inhibit = None;
+        }
+    }
+
+    fn poll_idle_inhibit(&mut self) {
+        let replies: Vec<_> = self
+            .idle_inhibit
+            .as_ref()
+            .map_or_else(Vec::new, |backend| backend.poll().collect());
+        for reply in replies {
+            if let Err(error) = reply {
+                tracing::warn!(%error, "idle inhibitor failed");
             }
         }
     }

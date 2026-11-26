@@ -274,6 +274,7 @@ for line in sys.stdin:
     fn manifest() -> Manifest {
         Manifest {
             adjusters: Vec::new(),
+            toggles: Vec::new(),
             plugin_id: None,
             author: None,
             security_contact: None,
@@ -350,6 +351,7 @@ for line in sys.stdin:
             | Effect::SetWindowSize { .. }
             | Effect::SetVolume(_)
             | Effect::AdjusterValue { .. }
+            | Effect::ModeToggleChanged { .. }
             | Effect::RunMenuCommand(_)
             | Effect::SettingsMode(_)
             | Effect::PersistMode(_)
