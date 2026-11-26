@@ -6530,18 +6530,22 @@ fn restoring_clears_what_the_saved_files_no_longer_hold() {
     assert!(state.settings().input.pads.is_empty());
 }
 
+fn has_update_chip(state: &State) -> bool {
+    state
+        .core()
+        .bar()
+        .segments()
+        .iter()
+        .any(|segment| segment.text == crate::update::BAR_CHIP_LABEL)
+}
+
 #[test]
 fn update_chip_appears_for_newer_release_and_disappears_after_update() {
     use crate::update::{Outcome, ReleaseInfo};
     let mut world = World::default();
     let state = State::default();
     assert!(
-        !state
-            .core()
-            .bar()
-            .segments()
-            .iter()
-            .any(|segment| segment.text == crate::update::BAR_CHIP_LABEL),
+        !has_update_chip(&state),
         "no update chip before a newer release is known"
     );
     let state = world.run(
@@ -6552,15 +6556,7 @@ fn update_chip_appears_for_newer_release_and_disappears_after_update() {
             available: Some("v0.149.0".into()),
         }),
     );
-    assert!(
-        state
-            .core()
-            .bar()
-            .segments()
-            .iter()
-            .any(|segment| segment.text == "Update"),
-        "update chip shows the spoken unit name"
-    );
+    assert!(has_update_chip(&state), "update chip shows the spoken unit name");
     let state = world.run(state, speech_event("Update"));
     let prompt = state
         .update_confirmation_text()
@@ -6585,15 +6581,7 @@ fn update_chip_appears_for_newer_release_and_disappears_after_update() {
             previous: Some("v0.148.2".into()),
         }),
     );
-    assert!(
-        !state
-            .core()
-            .bar()
-            .segments()
-            .iter()
-            .any(|segment| segment.text == "Update"),
-        "chip disappears after update"
-    );
+    assert!(!has_update_chip(&state), "chip disappears after update");
     assert_eq!(state.settings().previous_version.as_deref(), Some("v0.148.2"));
 }
 
