@@ -672,7 +672,7 @@ fn start_watchdog(data: &LoopData) -> Option<tehuti::watchdog::Heartbeat> {
 }
 
 fn poll_test_session(data: &mut LoopData, signal: &calloop::LoopSignal) {
-    if data.driver.is_some() {
+    if data.driver.is_some() || matches!(data.frames, Frames::Headless) {
         poll_nested_control(data);
     }
     if let Some(driver) = data.driver.as_mut() {

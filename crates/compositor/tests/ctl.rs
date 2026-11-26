@@ -42,7 +42,12 @@ mod tests {
     }
 
     fn ctl(socket: &Path, words: &[&str]) -> Output {
+        ctl_from(socket, words, &std::env::current_dir().unwrap())
+    }
+
+    fn ctl_from(socket: &Path, words: &[&str], directory: &Path) -> Output {
         Command::new(env!("CARGO_BIN_EXE_tehuti"))
+            .current_dir(directory)
             .args(["ctl", "--json", "--socket"])
             .arg(socket)
             .args(words)
@@ -114,7 +119,7 @@ mod tests {
         let checked = std::panic::catch_unwind(|| {
             assert!(query(&socket, &["status"])["pid"].as_u64().is_some());
             assert_eq!(query(&socket, &["windows"]), json!([]));
-            assert_eq!(query(&socket, &["workspaces"])[0]["active"], true);
+            assert_eq!(query(&socket, &["workspaces"])[0]["focused"], true);
             assert_eq!(query(&socket, &["outputs"])[0]["mode"]["width"], 320);
             query(&socket, &["layout", "focus-workspace-down"]);
             query(&socket, &["notice", "ctl test"]);
@@ -126,9 +131,33 @@ mod tests {
             query(&socket, &["display", "mode", "640x480@60"]);
             query(&socket, &["display", "mode", "--restore"]);
             assert_eq!(query(&socket, &["outputs"])[0]["mode"]["width"], 320);
-            let shot = root.path().join("shot.png");
-            query(&socket, &["shot", "output", shot.to_str().unwrap()]);
-            assert_eq!(image::image_dimensions(shot).unwrap(), (320, 240));
+            let caller = root.path().join("caller");
+            std::fs::create_dir(&caller).unwrap();
+            for words in [&["shot", "shot.png"][..], &["shot", "output", "output.png"]] {
+                assert!(ctl_from(&socket, words, &caller).status.success());
+                assert_eq!(
+                    image::image_dimensions(caller.join(words.last().unwrap())).unwrap(),
+                    (320, 240)
+                );
+            }
+            let caller_contexts = caller.join("contexts");
+            std::fs::create_dir(&caller_contexts).unwrap();
+            std::fs::write(
+                caller_contexts.join("context.toml"),
+                "app_id = '*'\nbuttons = {}\nspeech = {}\n",
+            )
+            .unwrap();
+            assert!(
+                ctl_from(&socket, &["context", "check", "contexts"], &caller)
+                    .status
+                    .success()
+            );
+            std::fs::write(caller_contexts.join("context.toml"), "invalid = '").unwrap();
+            assert!(
+                !ctl_from(&socket, &["context", "check", "contexts"], &caller)
+                    .status
+                    .success()
+            );
             assert_eq!(query(&socket, &["context", "list"])[0]["app_id"], "*");
             assert_eq!(query(&socket, &["context", "active"])["global"], true);
             assert_eq!(query(&socket, &["context", "check"])["valid"], true);
@@ -190,15 +219,25 @@ mod tests {
                 serde_json::from_str::<Value>(initial.lines().next().unwrap()).unwrap()["v"],
                 1
             );
-            assert!(drive(&driver, &["press", "south"]).status.success());
-            let _buttons = await_events(&event_path, "\"kind\":\"button\"");
-            assert!(
-                drive(&driver, &["say", "private test transcript"])
-                    .status
-                    .success()
-            );
-            let speech = await_events(&event_path, "\"kind\":\"speech\"");
-            assert!(!speech.contains("private test transcript"));
+            query(&socket, &["notice", "event stream barrier"]);
+            let changed = await_events(&event_path, "event stream barrier");
+            let records: Vec<Value> = changed
+                .lines()
+                .map(|line| serde_json::from_str(line).unwrap())
+                .collect();
+            for pair in records.windows(2) {
+                assert_eq!(
+                    pair[1]["sequence"].as_u64().unwrap(),
+                    pair[0]["sequence"].as_u64().unwrap() + 1
+                );
+            }
+            assert!(records.iter().all(|record| {
+                record["data"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .all(|event| serde_json::from_value::<tehuti::ctl::Event>(event.clone()).is_ok())
+            }));
             drop(event_process);
             malformed_requests_do_not_block(&socket);
             query(&socket, &["session", "restart"]);
@@ -230,6 +269,112 @@ mod tests {
             assert!(!reply.contains("hidden"));
         }
         query(socket, &["status"]);
+    }
+
+    #[test]
+    fn pad_and_on_screen_keyboard_input_produces_no_control_event() {
+        let directory = tempfile::tempdir().unwrap();
+        let display =
+            smithay::reexports::wayland_server::Display::<tehuti::state::Compositor>::new().unwrap();
+        let mut compositor = tehuti::state::Compositor::new(&display.handle()).unwrap();
+        let mut driver =
+            tehuti::driver::Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        let initial = compositor
+            .control(tehuti::ctl::Command::Events, directory.path())
+            .unwrap();
+        driver
+            .execute(
+                &mut compositor,
+                tehuti::driver::Request::Press {
+                    button: tehuti_protocol::ButtonName::South,
+                },
+            )
+            .unwrap();
+        driver
+            .execute(
+                &mut compositor,
+                tehuti::driver::Request::Stick {
+                    left: (500, -500),
+                    right: (-500, 500),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            compositor
+                .control(tehuti::ctl::Command::Events, directory.path())
+                .unwrap(),
+            initial
+        );
+        driver
+            .execute(
+                &mut compositor,
+                tehuti::driver::Request::Say {
+                    text: "keyboard".into(),
+                },
+            )
+            .unwrap();
+        assert!(compositor.on_screen_keyboard().is_open());
+        let opened = compositor
+            .control(tehuti::ctl::Command::Events, directory.path())
+            .unwrap();
+        for button in [
+            tehuti_protocol::ButtonName::DpadRight,
+            tehuti_protocol::ButtonName::South,
+        ] {
+            driver
+                .execute(&mut compositor, tehuti::driver::Request::Press { button })
+                .unwrap();
+        }
+        driver
+            .execute(
+                &mut compositor,
+                tehuti::driver::Request::Text {
+                    text: "private test text".into(),
+                },
+            )
+            .unwrap();
+        assert_eq!(
+            compositor
+                .control(tehuti::ctl::Command::Events, directory.path())
+                .unwrap(),
+            opened
+        );
+        for kind in ["button", "sticks", "key", "text", "speech"] {
+            assert!(serde_json::from_value::<tehuti::ctl::Event>(json!({"kind": kind})).is_err());
+        }
+    }
+
+    #[test]
+    fn headless_session_answers_control_without_a_host_display() {
+        let root = tempfile::tempdir().unwrap();
+        let config = root.path().join("contexts");
+        std::fs::create_dir(&config).unwrap();
+        let mut session = EventStream(
+            Command::new(env!("CARGO_BIN_EXE_tehuti"))
+                .arg("--test-driver")
+                .arg(&config)
+                .env("XDG_RUNTIME_DIR", root.path())
+                .env("XDG_CONFIG_HOME", root.path().join("config"))
+                .env("XDG_DATA_HOME", root.path().join("data"))
+                .env("XDG_STATE_HOME", root.path().join("state"))
+                .env_remove("WAYLAND_DISPLAY")
+                .env_remove("DISPLAY")
+                .env_remove("TEHUTI_SAY")
+                .env_remove("TEHUTI_SPEECH_SIDECAR")
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn()
+                .unwrap(),
+        );
+        let socket = root.path().join("tehuti-control/ctl");
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while !socket.exists() {
+            assert!(session.0.try_wait().unwrap().is_none(), "headless session exited");
+            assert!(Instant::now() < deadline, "headless session did not bind control");
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert_eq!(query(&socket, &["status"])["pid"], session.0.id());
+        assert!(query(&socket, &["outputs"])[0]["mode"]["width"].as_i64().unwrap() > 0);
     }
 
     #[test]
@@ -305,6 +450,7 @@ mod windows {
         let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_tehuti"))
             .args(["ctl", "--json", "--socket"])
             .arg(directory.join("control/ctl"))
+            .current_dir(directory)
             .args(words)
             .stdout(std::process::Stdio::piped())
             .stderr(std::process::Stdio::piped())
@@ -363,12 +509,16 @@ mod windows {
             directory.path(),
             &["layout", "toggle-fullscreen"],
         );
+        let status = invoke(&mut server, &mut compositor, directory.path(), &["status"]);
+        assert_eq!(status["ok"]["id"], identity);
+        assert_eq!(status["ok"]["focused"], true);
+        assert!(status["ok"].get("focus").is_none());
         let path = directory.path().join("window.png");
         let _reply = invoke(
             &mut server,
             &mut compositor,
             directory.path(),
-            &["shot", "window", path.to_str().unwrap()],
+            &["shot", "window", "window.png"],
         );
         assert!(image::image_dimensions(path).unwrap().0 > 0);
         let _reply = invoke(

@@ -5,27 +5,6 @@ use serde_json::{Value, json};
 use std::path::Path;
 
 impl Compositor {
-    pub(super) fn push_control_event(&mut self, data: &Value) {
-        self.control_sequence = self.control_sequence.saturating_add(1);
-        if self.control_events.len() >= 128 {
-            let _oldest = self.control_events.pop_front();
-        }
-        self.control_events
-            .push_back(json!({"sequence": self.control_sequence, "data": data}));
-    }
-
-    pub(super) fn observe_control_event(&mut self, event: &tehuti_protocol::Event) {
-        let data = match event {
-            tehuti_protocol::Event::Tick { .. } => return,
-            tehuti_protocol::Event::Button { name, state } => {
-                json!({"kind": "button", "name": name, "state": state})
-            }
-            tehuti_protocol::Event::Focus { app_id, .. } => json!({"kind": "focus", "app_id": app_id}),
-            tehuti_protocol::Event::Speech { .. } => json!({"kind": "speech", "redacted": true}),
-        };
-        self.push_control_event(&data);
-    }
-
     /// # Errors
     /// Validates destinations and reports failures without changing approval state.
     #[expect(clippy::too_many_lines, reason = "exhaustive typed control dispatch")]
@@ -33,16 +12,14 @@ impl Compositor {
         match command {
             Command::Status => {
                 return Ok(
-                    json!({"pid": std::process::id(), "version": env!("CARGO_PKG_VERSION"), "focus": self.placement.focused_destination(), "app_id": self.focused_window_label().0, "restart_requested": self.restart_requested}),
+                    json!({"pid": std::process::id(), "version": env!("CARGO_PKG_VERSION"), "id": self.placement.focused_destination(), "focused": self.placement.focused_destination().is_some(), "app_id": self.focused_window_label().0, "restart_requested": self.restart_requested}),
                 );
             }
             Command::Windows => return Ok(self.control_windows()),
             Command::Workspaces => return Ok(self.control_workspaces()),
             Command::Outputs => return Ok(self.control_outputs()),
             Command::Events => {
-                return Ok(
-                    json!({"windows": self.control_windows(), "workspaces": self.control_workspaces(), "outputs": self.control_outputs(), "contexts": self.control_contexts(), "inputs": self.control_events}),
-                );
+                return Ok(json!(self.control_events()));
             }
             Command::Layout { action } => self.apply_layout(action),
             Command::Focus { identity } => {
@@ -211,6 +188,47 @@ impl Compositor {
         Ok(json!({}))
     }
 
+    fn control_events(&self) -> Vec<crate::ctl::Event> {
+        use crate::ctl::Event;
+        let mut events = vec![Event::Focus {
+            id: self.placement.focused_destination(),
+            focused: self.placement.focused_destination().is_some(),
+        }];
+        events.extend(self.placement.placed(|_| 0.0).iter().map(|window| Event::Window {
+            id: window.identity,
+            focused: window.focused,
+        }));
+        events.extend(self.contexts().iter().map(|context| Event::Context {
+            app_id: context.app_id().to_owned(),
+            title: context.title().map(str::to_owned),
+        }));
+        for output in &self.placement.snapshot().outputs {
+            events.extend(
+                output
+                    .workspaces
+                    .iter()
+                    .enumerate()
+                    .map(|(index, workspace)| Event::Workspace {
+                        id: workspace.workspace.0,
+                        focused: index == output.active_workspace,
+                    }),
+            );
+        }
+        events.extend(self.space.outputs().filter_map(|output| {
+            output.current_mode().map(|mode| Event::Mode {
+                name: output.name(),
+                width: mode.size.w,
+                height: mode.size.h,
+                refresh_mhz: mode.refresh,
+                scale: output.current_scale().fractional_scale(),
+            })
+        }));
+        if let Some(text) = self.visible_notice_text() {
+            events.push(Event::Notice { text });
+        }
+        events
+    }
+
     fn control_windows(&self) -> Value {
         let windows: Vec<_> = self
             .placement
@@ -238,7 +256,7 @@ impl Compositor {
 
     fn control_workspaces(&self) -> Value {
         let workspaces: Vec<_> = self.placement.snapshot().outputs.iter().flat_map(|output| output.workspaces.iter().enumerate().map(|(index, workspace)| {
-            json!({"id": workspace.workspace.0, "name": workspace.name, "output": output.output.0, "active": index == output.active_workspace,
+            json!({"id": workspace.workspace.0, "name": workspace.name, "output": output.output.0, "focused": index == output.active_workspace,
                 "windows": workspace.columns.iter().flat_map(|column| column.tiles.iter().map(|tile| tile.window.0)).chain(workspace.helpers.iter().map(|window| window.0)).collect::<Vec<_>>()})
         })).collect();
         json!(workspaces)

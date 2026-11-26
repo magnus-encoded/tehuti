@@ -99,19 +99,21 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
         ["shot"] | ["shot", "output"] => Ok(Command::Shot {
             path: default_shot()?,
         }),
-        ["shot", "output", path] | ["shot", path] if *path != "window" => {
-            Ok(Command::Shot { path: (*path).into() })
-        }
+        ["shot", "output", path] | ["shot", path] if *path != "window" => Ok(Command::Shot {
+            path: caller_path(path)?,
+        }),
         ["shot", "window"] => Ok(Command::ShotWindow {
             path: default_shot()?,
         }),
-        ["shot", "window", path] => Ok(Command::ShotWindow { path: (*path).into() }),
+        ["shot", "window", path] => Ok(Command::ShotWindow {
+            path: caller_path(path)?,
+        }),
         ["context", "list"] => Ok(Command::ContextList),
         ["context", "active"] => Ok(Command::ContextActive),
         ["context", "reload"] => Ok(Command::ContextReload),
         ["context", "check"] => Ok(Command::ContextCheck { path: None }),
         ["context", "check", path] => Ok(Command::ContextCheck {
-            path: Some((*path).into()),
+            path: Some(caller_path(path)?),
         }),
         ["plugin", "list"] => Ok(Command::PluginList),
         ["session", "restart"] => Ok(Command::SessionRestart),
@@ -120,10 +122,12 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
     }
 }
 
+fn caller_path(path: &str) -> Result<PathBuf, String> {
+    std::path::absolute(path).map_err(|error| error.to_string())
+}
+
 fn default_shot() -> Result<PathBuf, String> {
-    std::env::current_dir()
-        .map(|path| path.join("tehuti-shot.png"))
-        .map_err(|error| error.to_string())
+    caller_path("tehuti-shot.png")
 }
 
 fn not_yet(group: &str) -> String {

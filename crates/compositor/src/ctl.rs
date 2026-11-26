@@ -73,6 +73,38 @@ pub enum Command {
     SessionRestart,
 }
 
+/// Only session state can enter the public event stream.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum Event {
+    Focus {
+        id: Option<u64>,
+        focused: bool,
+    },
+    Context {
+        app_id: String,
+        title: Option<String>,
+    },
+    Workspace {
+        id: u64,
+        focused: bool,
+    },
+    Window {
+        id: u64,
+        focused: bool,
+    },
+    Mode {
+        name: String,
+        width: i32,
+        height: i32,
+        refresh_mhz: i32,
+        scale: f64,
+    },
+    Notice {
+        text: String,
+    },
+}
+
 /// # Errors
 /// Requires the session's runtime directory.
 pub fn socket_path() -> io::Result<PathBuf> {
