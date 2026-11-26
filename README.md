@@ -205,3 +205,47 @@ Licensing is decided in [ADR 0004](docs/adr/0004-licensing.md); the texts are in
 - Docs take the licence of the part they describe.
 - Plugins are separate programs and may use any licence.
 - The bundled Liberation fonts keep their own licence, in `crates/compositor/assets/Liberation-LICENSE`.
+
+### Running-session control
+
+`tehuti ctl --help` lists session inspection and control commands. Run ctl as the
+session user with its `XDG_RUNTIME_DIR`, or select an isolated session with
+`--socket PATH`. The socket is `$XDG_RUNTIME_DIR/tehuti-control/ctl`; the server
+also checks Linux peer credentials. It never accepts synthetic input or
+confirmation answers. Use `tehuti-drive` for test input.
+
+Examples: `tehuti ctl windows --json`, `tehuti ctl focus 0`,
+`tehuti ctl layout focus-column-right`, `tehuti ctl launch "Example Editor"`,
+`tehuti ctl shot output /path/to/shot.png`. Desktop ids and discovered desktop
+names are accepted by launch; raw programs require `launch --command PROGRAM
+[ARGS...]`, without an implicit shell. `shot window [PATH]` captures the visible
+part of the focused window; the default destination is `./tehuti-shot.png`.
+
+Requests and responses are newline-delimited JSON. Each request has `v: 1` and
+`command: {name: "status"}` (or another typed command). Replies have `v: 1` and
+exactly one of `ok` or `error`. JSON output uses this envelope, including without
+`--json`. Unknown versions, fields and commands are rejected. Idle clients and
+slow readers have bounded buffers and deadlines.
+
+`events` streams NDJSON state records with `v`, `event`, `sequence`, and `data`.
+It starts with a snapshot and emits changed snapshots while connected, using
+one sequence counter per subscription. `data` contains a typed list of focus,
+context, workspace, open window, output mode and notice records. A closed window
+is absent from the next snapshot. Window and workspace records use `id` and
+`focused`, as does `status`. The latest 256 pad input and keyboard summary records
+are retained in each snapshot, with record sequence numbers for deduplication.
+Outside the on-screen keyboard, button names, button states and stick coordinates
+enter the stream. While it is open, inputs only increment counts. Closing it adds
+one `keyboard_summary`: input counts for `letters`, `capitals` and `symbols`, plus
+`character_edits` and `word_edits` (edits of a picked word). The close button's
+release stays suppressed. Key presses, typed text, speech, window titles, secret
+values, configuration contents and approval answers are omitted.
+
+`display mode WIDTHxHEIGHT[@HZ]` chooses supported dimensions first, then
+refresh rate. Repeated requests retain the first restore point;
+`display mode --restore` restores it and clears it, and succeeds if none exists.
+Changes last for the session and do not write display settings. `display scale N`
+accepts integers from 1 to 8. A seat modeset refuses an active settings preview.
+`context reload` retains the last good version of broken files and reports a
+failure. `session restart` requests the existing supervisor restart exit status.
+Commands outside phase one return a not-yet error naming their issue.

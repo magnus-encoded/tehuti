@@ -9,12 +9,14 @@ usage: tehuti <context-directory> [application] [arguments...]
        tehuti --version | -V
        tehuti --check-config [config-directory]
        tehuti --install-skill [path]
+       tehuti ctl [--json] [--socket PATH] COMMAND
        tehuti config share <context> <section>... [--as <name>]
 ";
 
 /// What one run of the binary does.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Invocation {
+    Ctl(Vec<OsString>),
     Help,
     Version,
     /// Check the configuration directory; the rest of the arguments follow the option.
@@ -103,6 +105,9 @@ pub fn parse_with(
 ) -> Result<Invocation, UsageError> {
     let mut arguments = arguments.into_iter().peekable();
     let first = arguments.next().ok_or(UsageError::MissingContextDirectory)?;
+    if first == "ctl" {
+        return Ok(Invocation::Ctl(arguments.collect()));
+    }
     // `config share` cannot be a context directory with the application `share`.
     if first == "config" && arguments.peek().is_some_and(|word| word == "share") {
         return Ok(Invocation::Config(arguments.collect()));

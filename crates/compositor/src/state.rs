@@ -3,6 +3,9 @@
 #[path = "recording.rs"]
 mod recording;
 
+#[path = "ctl_state.rs"]
+mod control;
+
 use std::time::Instant;
 
 use crate::layout_window::LayoutWindow;
@@ -146,6 +149,8 @@ pub struct Compositor {
     injected_clock: Option<InjectedClock>,
     driver_clock: crate::driver::Clock,
     driver_elapsed: core::time::Duration,
+    pub(crate) control_inputs: std::collections::VecDeque<crate::ctl::Event>,
+    pub(crate) control_sequence: u64,
     dim_elapsed: core::time::Duration,
     focus_outline_ids: [smithay::backend::renderer::element::Id; 4],
     step_mark_ids: [smithay::backend::renderer::element::Id; 4],
@@ -316,6 +321,8 @@ impl Compositor {
             injected_clock: None,
             driver_clock: crate::driver::Clock::Live,
             driver_elapsed: core::time::Duration::ZERO,
+            control_inputs: std::collections::VecDeque::new(),
+            control_sequence: 0,
             previous_tick: Instant::now(),
             dim_elapsed: core::time::Duration::ZERO,
             focus_outline_ids: core::array::from_fn(|_| smithay::backend::renderer::element::Id::new()),
@@ -1709,6 +1716,7 @@ impl Compositor {
             self.close_invitation_written = crate::timeline_level::CloseWritten::Not;
             self.record_debug("input", &input);
         }
+        self.observe_control_input(&input);
         let elapsed = dispatch_elapsed(&input);
         self.advance_clocks(elapsed);
         let level = self.dispatch.core().level();
@@ -1723,6 +1731,7 @@ impl Compositor {
                 .map(|anchor| (self.dispatch.keyboard().caret(), anchor));
             let (next, effects) = tehuti_core::dispatch::step(core::mem::take(&mut self.dispatch), input);
             self.dispatch = next;
+            self.finish_control_keyboard();
             if let Some(previous) = previous {
                 self.sync_keyboard_edit(previous);
             }
@@ -2435,6 +2444,8 @@ impl Compositor {
 
     fn leave_session(&mut self, status: u8) {
         self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
+        self.dispatch.close_keyboard();
+        self.finish_control_keyboard();
         self.session_exit_status = Some(status);
         self.quit_requested = true;
     }
@@ -2902,6 +2913,8 @@ impl Compositor {
             Action::Quit | Action::Restart => {
                 self.restart_requested = *action == Action::Restart;
                 self.speech_input(tehuti_core::speech::SpeechInput::Cancel);
+                self.dispatch.close_keyboard();
+                self.finish_control_keyboard();
                 self.quit_requested = true;
             }
             Action::Launch { desktop_entry } => self.launch_application(desktop_entry),
@@ -3968,6 +3981,10 @@ impl Compositor {
     }
 
     fn remove_layout_window(&mut self, key: &WlSurface, close: bool) {
+        if self.placement.focused() == Some(key) {
+            self.dispatch.close_keyboard();
+            self.finish_control_keyboard();
+        }
         if let Some(window) = self.placement.unmap(key) {
             if close && let Some(toplevel) = window.toplevel() {
                 toplevel.send_close();

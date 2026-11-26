@@ -151,6 +151,10 @@ impl core::fmt::Debug for Plugins {
 }
 
 impl Plugins {
+    pub(crate) fn control_list(&self) -> serde_json::Value {
+        serde_json::json!(self.entries.iter().map(|entry| serde_json::json!({"id": entry.manifest.plugin_id, "kind": entry.manifest.kind, "initialized": entry.session.as_ref().is_some_and(|session| session.borrow().status == Status::Ready)})).collect::<Vec<_>>())
+    }
+
     /// Initialized plugins that match the focused application, in manifest order.
     fn focused_ready(&self) -> impl Iterator<Item = &Entry> {
         self.entries.iter().filter(|entry| {

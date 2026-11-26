@@ -1136,3 +1136,24 @@ fn a_y_tap_on_a_closed_keyboard_types_nothing() {
     let _released = keyboard.button(ButtonName::North, ButtonState::Released, true);
     assert_eq!(keyboard.draft(), "");
 }
+
+#[test]
+fn edit_counts_distinguish_characters_from_picked_words_and_reset_on_open() {
+    let mut keyboard = with_picked_word("private text", 1);
+    assert_eq!(keyboard.edit_counts(), (1, 0));
+    press(&mut keyboard, ButtonName::West);
+    assert_eq!(keyboard.edit_counts(), (1, 1));
+    press(&mut keyboard, ButtonName::South);
+    assert_eq!(keyboard.edit_counts(), (2, 1));
+    flick(&mut keyboard, -1000);
+    press(&mut keyboard, ButtonName::South);
+    assert_eq!(keyboard.edit_counts(), (2, 2));
+    keyboard.close();
+    assert_eq!(keyboard.edit_counts(), (0, 0));
+    let summaries = keyboard.take_summaries();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].character_edits, 2);
+    assert_eq!(summaries[0].word_edits, 2);
+    keyboard.open();
+    assert_eq!(keyboard.edit_counts(), (0, 0));
+}
