@@ -306,7 +306,7 @@ pub fn owner(view: &OwnershipView, button: ButtonName, phase: Phase) -> Owner {
     if view.menu_release(button) {
         return Owner::Tehuti(Why::MenuRelease);
     }
-    if view.level == Level::Columns && matches!(button, ButtonName::LeftBumper | ButtonName::RightBumper) {
+    if view.level == Level::Columns && crate::columns_level_action(button).is_some() {
         return Owner::Level;
     }
     view.route_layers(button, phase)
@@ -620,7 +620,7 @@ mod tests {
                 && !view.passthrough
                 && matches!(got, Owner::Plugin | Owner::Context { .. } | Owner::GlobalLayer | Owner::Dropped)
             {
-                prop_assert!(!matches!(button, ButtonName::LeftBumper | ButtonName::RightBumper));
+                prop_assert!(crate::columns_level_action(button).is_none());
             }
         }
 

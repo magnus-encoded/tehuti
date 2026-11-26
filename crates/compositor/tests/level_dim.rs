@@ -547,6 +547,87 @@ mod level_dim {
         });
     }
 
+    fn say_phrase(compositor: &mut Compositor, phrase: &str) {
+        compositor.say(tehuti_protocol::Text::new(phrase.into()).unwrap());
+    }
+
+    fn press_button(compositor: &mut Compositor, name: ButtonName) {
+        for state in [ButtonState::Pressed, ButtonState::Released] {
+            compositor.handle(&Event::Button { name, state });
+        }
+    }
+
+    fn focused_column(compositor: &Compositor) -> tehuti_core::layout::ColumnView {
+        let snapshot = compositor.layout_snapshot();
+        let output = &snapshot.outputs[0];
+        let workspace = &output.workspaces[output.active_workspace];
+        workspace.columns[workspace.focused_column.unwrap()].clone()
+    }
+
+    #[test]
+    fn default_layout_phrases_drive_workspaces_columns_and_fullscreen() {
+        scene(2, |compositor, _| {
+            let initial = compositor.layout_snapshot().focused_window.unwrap();
+            say_phrase(compositor, "Move left.");
+            assert_eq!(
+                compositor.layout_snapshot().outputs[0].workspaces[0].focused_column,
+                Some(0)
+            );
+            say_phrase(compositor, "Full width.");
+            assert_eq!(
+                focused_column(compositor).width,
+                Some(tehuti_core::layout::PresetSize::Proportion(1.0))
+            );
+            say_phrase(compositor, "Full screen.");
+            assert_eq!(
+                focused_column(compositor).tiles[0].mode,
+                tehuti_core::layout::TileMode::Fullscreen
+            );
+            say_phrase(compositor, "Full screen.");
+            assert_eq!(
+                focused_column(compositor).tiles[0].mode,
+                tehuti_core::layout::TileMode::Normal
+            );
+            say_phrase(compositor, "Send to workspace two and stay.");
+            let after_stay = compositor.layout_snapshot();
+            assert_eq!(after_stay.outputs[0].active_workspace, 0);
+            assert_eq!(after_stay.outputs[0].workspaces[0].columns.len(), 1);
+            assert_eq!(
+                after_stay.outputs[0].workspaces[1].columns[0].tiles[0].window,
+                initial
+            );
+            say_phrase(compositor, "Workspace two.");
+            assert_eq!(compositor.layout_snapshot().outputs[0].active_workspace, 1);
+            assert_eq!(compositor.layout_snapshot().focused_window, Some(initial));
+            say_phrase(compositor, "Send to workspace one.");
+            let after_send = compositor.layout_snapshot();
+            assert_eq!(after_send.outputs[0].active_workspace, 0);
+            assert_eq!(after_send.outputs[0].workspaces[0].columns.len(), 2);
+        });
+    }
+
+    #[test]
+    fn columns_level_triggers_and_stick_clicks_drive_workspaces_and_fullscreen() {
+        scene(2, |compositor, _| {
+            tap(compositor);
+            press_button(compositor, ButtonName::RightTrigger);
+            assert_eq!(compositor.layout_snapshot().outputs[0].active_workspace, 1);
+            assert_eq!(compositor.voice_bar().segments()[0].text, "Workspace 2");
+            press_button(compositor, ButtonName::LeftTrigger);
+            assert_eq!(compositor.layout_snapshot().outputs[0].active_workspace, 0);
+            press_button(compositor, ButtonName::LeftStick);
+            assert_eq!(
+                focused_column(compositor).width,
+                Some(tehuti_core::layout::PresetSize::Proportion(1.0))
+            );
+            press_button(compositor, ButtonName::RightStick);
+            assert_eq!(
+                focused_column(compositor).tiles[0].mode,
+                tehuti_core::layout::TileMode::Fullscreen
+            );
+        });
+    }
+
     #[test]
     fn identical_kitty_windows_have_plain_column_labels() {
         scene_with_app(2, 1, true, |compositor, _| {

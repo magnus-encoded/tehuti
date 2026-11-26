@@ -135,7 +135,7 @@ fields are rejected.
 | `{ close = "focused" }` | Closes the focused window. |
 | `{ restart = true }` | Restarts the compositor in its session. `false` is rejected. |
 | `{ notify = "Ready" }` | Shows a notice. |
-| `{ layout = "focus-column-left" }` | Runs a tiling action, written in kebab case: `focus-column-left`, `focus-column-right`, `focus-window-up`, `focus-window-down`, `move-column-left`, `move-column-right`, `switch-preset-column-width`, `switch-preset-column-width-back`, `focus-workspace-down`, `focus-workspace-up`, `move-column-to-workspace-down`, `move-column-to-workspace-up`, `toggle-fullscreen`, `maximize-column`. |
+| `{ layout = "focus-column-left" }` | Runs a tiling action, written in kebab case: `focus-column-left`, `focus-column-right`, `focus-window-up`, `focus-window-down`, `move-column-left`, `move-column-right`, `switch-preset-column-width`, `switch-preset-column-width-back`, `focus-workspace-down`, `focus-workspace-up`, `move-column-to-workspace-down`, `move-column-to-workspace-up`, `toggle-fullscreen`, `maximize-column`, or a numbered workspace table `{ focus-workspace = 2 }`, `{ move-column-to-workspace = 2 }`, `{ move-column-to-workspace-stay = 2 }`. |
 | `{ ticker = "toggle" }` | Shows or hides the mapping ticker. |
 | `{ undo_dictation = true }` | Deletes the last dictated phrase. `false` is rejected. |
 | `{ secret = { entry = "mail" } }` | Asks for confirmation, then delivers the named secret entry. |
@@ -636,6 +636,40 @@ that maps an action no button reaches draws a `--check-config` warning.
 
 New columns default to one-third of the available width, the narrowest preset.
 `LayoutConfig.default_column_width` and per-window rules can override it.
+
+## Layout phrases and chords
+
+Without an explicit phrase mapping, voice names whole layout destinations and states
+even with no context files (ADR 0008). Relative steps never go on voice.
+
+| Phrase | Action |
+| --- | --- |
+| `"Workspace two"` (1 to 20 as words, or any positive number) | Focuses that workspace |
+| `"Send to workspace two"` | Moves the focused column to that workspace and follows focus to it |
+| `"Send to workspace two and stay"` (or `"Send and stay workspace two"`, `"Send and stay two"`) | Moves the focused column to that workspace and stays on the current workspace |
+| `"Full screen"` | Toggles fullscreen on the focused window |
+| `"Full width"` | Maximizes the focused column to full width |
+| `"Move left"` / `"Move right"` | Moves the focused column one slot left or right |
+
+An explicit exact phrase in the focused or global context overrides these defaults.
+Every unit shows the name voice uses for it: unnamed workspaces show as `Workspace 1`,
+`Workspace 2` on the bar and in workspace feedback, and the bar and ticker label these
+actions `Workspace N`, `Send to workspace N`, `Send to workspace N and stay`,
+`Full screen`, `Full width`, `Move left` and `Move right`.
+
+The controller steps relatively and never needs a workspace name. Default chords:
+
+| Control | Level | Action |
+| --- | --- | --- |
+| `LB` / `RB` | Columns | Focuses the column to the left or right |
+| `LT` / `RT` | Columns | Focuses the previous or next workspace |
+| `LS` | Columns | Toggles full width (`maximize-column`) |
+| `RS` | Columns | Toggles full screen (`toggle-fullscreen`) |
+| `Guide + D-pad` | App | Focuses the neighbouring column (left/right) or workspace (up/down) |
+| `Guide + D-pad` | Columns | Moves the focused column left/right or to the workspace above/below |
+
+At the columns level (toggled with a short Guide tap), the mapping ticker lists these
+defaults and the `Guide + D-pad` chords using the connected pad's button names.
 
 ## Pad passthrough
 

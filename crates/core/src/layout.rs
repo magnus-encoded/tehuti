@@ -242,7 +242,7 @@ pub enum Command {
 
 /// The layout command a context's tiling action stands for.
 #[must_use]
-pub const fn command_for(action: tehuti_protocol::LayoutAction) -> Command {
+pub fn command_for(action: tehuti_protocol::LayoutAction) -> Command {
     match action {
         tehuti_protocol::LayoutAction::FocusColumnLeft => Command::FocusColumnLeft,
         tehuti_protocol::LayoutAction::FocusColumnRight => Command::FocusColumnRight,
@@ -254,11 +254,29 @@ pub const fn command_for(action: tehuti_protocol::LayoutAction) -> Command {
         tehuti_protocol::LayoutAction::SwitchPresetColumnWidthBack => Command::SwitchPresetColumnWidthBack,
         tehuti_protocol::LayoutAction::FocusWorkspaceDown => Command::FocusWorkspaceDown,
         tehuti_protocol::LayoutAction::FocusWorkspaceUp => Command::FocusWorkspaceUp,
+        tehuti_protocol::LayoutAction::FocusWorkspace(workspace) => {
+            Command::FocusWorkspaceAt(usize::from(workspace.get()).saturating_sub(1))
+        }
         tehuti_protocol::LayoutAction::MoveColumnToWorkspaceDown => Command::MoveColumnToWorkspaceDown,
         tehuti_protocol::LayoutAction::MoveColumnToWorkspaceUp => Command::MoveColumnToWorkspaceUp,
+        tehuti_protocol::LayoutAction::MoveColumnToWorkspace(workspace)
+        | tehuti_protocol::LayoutAction::MoveColumnToWorkspaceStay(workspace) => {
+            Command::MoveColumnToWorkspaceAt(usize::from(workspace.get()).saturating_sub(1))
+        }
         tehuti_protocol::LayoutAction::ToggleFullscreen => Command::ToggleFullscreen,
         tehuti_protocol::LayoutAction::MaximizeColumn => Command::MaximizeColumn,
     }
+}
+
+/// Whether moving a column with `action` switches focus to the destination workspace.
+#[must_use]
+pub const fn follows_moved_window(action: tehuti_protocol::LayoutAction) -> bool {
+    matches!(
+        action,
+        tehuti_protocol::LayoutAction::MoveColumnToWorkspaceUp
+            | tehuti_protocol::LayoutAction::MoveColumnToWorkspaceDown
+            | tehuti_protocol::LayoutAction::MoveColumnToWorkspace(_)
+    )
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -3459,7 +3459,14 @@ impl Compositor {
     }
 
     fn apply_layout(&mut self, action: tehuti_protocol::LayoutAction) {
-        self.apply_layout_command(tehuti_core::layout::command_for(action));
+        let moved = tehuti_core::layout::follows_moved_window(action)
+            .then(|| self.placement.focused().cloned())
+            .flatten();
+        self.placement.apply(tehuti_core::layout::command_for(action));
+        self.place_layout();
+        if moved.is_some() {
+            self.follow_window(moved);
+        }
     }
 
     /// Applies a tiling command and places the mapped windows.

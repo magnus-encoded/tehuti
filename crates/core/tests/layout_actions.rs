@@ -175,6 +175,41 @@ mod layout_actions {
     }
 
     #[test]
+    fn numbered_workspace_layout_actions_parse_and_reject_zero() {
+        let context = parse_context(
+            "app_id = 'test'\n[speech]\n\
+             'go two' = { layout = { focus-workspace = 2 } }\n\
+             'send two' = { layout = { move-column-to-workspace = 2 } }\n\
+             'stay two' = { layout = { move-column-to-workspace-stay = 2 } }",
+        )
+        .unwrap();
+        let two = core::num::NonZeroU8::new(2).unwrap();
+        assert_eq!(
+            context.speech_action("go two"),
+            Some(Action::Layout {
+                action: LayoutAction::FocusWorkspace(two),
+            })
+        );
+        assert_eq!(
+            context.speech_action("send two"),
+            Some(Action::Layout {
+                action: LayoutAction::MoveColumnToWorkspace(two),
+            })
+        );
+        assert_eq!(
+            context.speech_action("stay two"),
+            Some(Action::Layout {
+                action: LayoutAction::MoveColumnToWorkspaceStay(two),
+            })
+        );
+        assert!(
+            parse_context("app_id = 'test'\n[speech]\n'zero' = { layout = { focus-workspace = 0 } }")
+                .is_err(),
+            "workspace zero is rejected at the config boundary"
+        );
+    }
+
+    #[test]
     fn new_windows_open_at_one_third_width() {
         let snapshot = layout(2).snapshot();
         for column in &snapshot.outputs[0].workspaces[0].columns {

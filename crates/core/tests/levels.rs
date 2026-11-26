@@ -143,6 +143,63 @@ mod levels {
     }
 
     #[test]
+    fn columns_level_triggers_switch_workspaces_and_sticks_toggle_fullscreen_and_full_width() {
+        let context = tehuti_protocol::parse_context(
+            "app_id = 'app'\n[buttons]\n\
+             left_trigger = { key = 'a' }\nright_trigger = { key = 'b' }\n\
+             left_stick = { key = 'c' }\nright_stick = { key = 'd' }",
+        )
+        .unwrap();
+        let (app, _) = run(State::with_contexts(vec![context]), &[focus("app")]);
+        let (_, app_actions) = run(
+            app.clone(),
+            &[
+                button(ButtonName::LeftTrigger, ButtonState::Pressed),
+                button(ButtonName::RightStick, ButtonState::Pressed),
+            ],
+        );
+        assert_eq!(
+            app_actions,
+            vec![
+                Action::Key {
+                    key: tehuti_protocol::KeyName::A,
+                    mods: Vec::new()
+                },
+                Action::Key {
+                    key: tehuti_protocol::KeyName::D,
+                    mods: Vec::new()
+                },
+            ]
+        );
+        let (columns, _) = run(app, &tap());
+        let sequence: Vec<Event> = [
+            ButtonName::LeftTrigger,
+            ButtonName::RightTrigger,
+            ButtonName::LeftStick,
+            ButtonName::RightStick,
+        ]
+        .into_iter()
+        .flat_map(|name| {
+            [
+                button(name, ButtonState::Pressed),
+                button(name, ButtonState::Released),
+            ]
+        })
+        .collect();
+        let (_, actions) = run(columns, &sequence);
+        let expected: Vec<Action> = [
+            LayoutAction::FocusWorkspaceUp,
+            LayoutAction::FocusWorkspaceDown,
+            LayoutAction::MaximizeColumn,
+            LayoutAction::ToggleFullscreen,
+        ]
+        .into_iter()
+        .map(|action| Action::Layout { action })
+        .collect();
+        assert_eq!(actions, expected);
+    }
+
+    #[test]
     fn guide_at_499_ms_taps_and_at_500_ms_opens_the_menu() {
         for (millis, level, menu_open) in [(499, Level::Columns, false), (500, Level::App, true)] {
             let (state, actions) = run(

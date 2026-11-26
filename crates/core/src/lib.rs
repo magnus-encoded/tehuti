@@ -725,7 +725,10 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         let _command = menu_input(&mut state, event);
         return (state, Vec::new(), false);
     }
-    if let Some(actions) = shoulder_level(&state, event) {
+    if talk_button(&state, event, plugin_active) {
+        return (state, Vec::new(), false);
+    }
+    if let Some(actions) = columns_level(&state, event) {
         return (state, actions, false);
     }
     if state.passthrough() && matches!(event, Event::Button { .. }) {
@@ -745,7 +748,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
         return (state, actions, false);
     }
-    if let Some(actions) = talk_or_invoke(&state, event, plugin_active) {
+    if let Some(actions) = invoke_speech(&state, event) {
         return (state, actions, false);
     }
     if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
@@ -761,11 +764,10 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     (state, actions, false)
 }
 
-/// A push-to-talk press does nothing more. Speech meets the built-in `invoke` verb
-/// ahead of plugin verbs and context phrases; its words snap to the focused and
-/// global contexts' invoke words.
-fn talk_or_invoke(state: &State, event: &Event, plugin_active: bool) -> Option<Vec<Action>> {
-    let transcript = match event {
+/// A push-to-talk button stops ahead of the columns level, global layer, stick modifiers and contexts.
+fn talk_button(state: &State, event: &Event, plugin_active: bool) -> bool {
+    matches!(
+        event,
         Event::Button {
             name,
             state: button_state,
@@ -773,15 +775,18 @@ fn talk_or_invoke(state: &State, event: &Event, plugin_active: bool) -> Option<V
             ownership::owner(
                 &state.ownership_view(plugin_active),
                 *name,
-                (*button_state).into()
+                (*button_state).into(),
             ),
             ownership::Owner::Talk(_)
-        ) =>
-        {
-            return Some(Vec::new());
-        }
-        Event::Speech { text } => text,
-        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => return None,
+        )
+    )
+}
+
+/// Speech meets the built-in `invoke` verb ahead of plugin verbs and context phrases;
+/// its words snap to the focused and global contexts' invoke words.
+fn invoke_speech(state: &State, event: &Event) -> Option<Vec<Action>> {
+    let Event::Speech { text: transcript } = event else {
+        return None;
     };
     let known = [focused_context(state), global_context(state)]
         .into_iter()
@@ -844,13 +849,13 @@ pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<Stri
     (!commands.is_empty()).then_some(commands)
 }
 
-/// Every exact match in chain order, then the built-in close, then folded
-/// matches, then plurals, then prefix rules, then fuzzy, then unmatched dictation.
+/// Every exact match in chain order, then built-in phrases (close and layout),
+/// then folded matches, then plurals, then prefix rules, then fuzzy, then unmatched dictation.
 fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Action> {
     focused
         .and_then(|context| context.mapped_speech_action(phrase))
         .or_else(|| global.and_then(|context| context.mapped_speech_action(phrase)))
-        .or_else(|| (tehuti_protocol::normalize_phrase(phrase) == "close").then_some(Action::Close))
+        .or_else(|| builtin_speech_action(phrase))
         .or_else(|| focused.and_then(|context| context.folded_speech_action(phrase)))
         .or_else(|| global.and_then(|context| context.folded_speech_action(phrase)))
         .or_else(|| focused.and_then(|context| context.plural_speech_action(phrase)))
@@ -864,6 +869,13 @@ fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &st
                 .ok()
                 .map(|notice| Action::Notice { text: notice })
         })
+}
+
+fn builtin_speech_action(phrase: &str) -> Option<Action> {
+    if tehuti_protocol::normalize_phrase(phrase) == "close" {
+        return Some(Action::Close);
+    }
+    layout_phrases::parse(phrase).map(|action| Action::Layout { action })
 }
 
 /// The `text_after` rule of the focused context, else of the global one.
@@ -1120,16 +1132,43 @@ fn global_context(state: &State) -> Option<&Context> {
         .find(|context| context.app_id() == GLOBAL_APP_ID)
 }
 
-/// In the columns level LB and RB move focus between columns and never reach the app.
-fn shoulder_level(state: &State, event: &Event) -> Option<Vec<Action>> {
+/// The built-in tiling action for a button at the columns level, if any.
+const fn columns_level_action(button: ButtonName) -> Option<LayoutAction> {
+    match button {
+        ButtonName::LeftBumper => Some(LayoutAction::FocusColumnLeft),
+        ButtonName::RightBumper => Some(LayoutAction::FocusColumnRight),
+        ButtonName::LeftTrigger => Some(LayoutAction::FocusWorkspaceUp),
+        ButtonName::RightTrigger => Some(LayoutAction::FocusWorkspaceDown),
+        ButtonName::LeftStick => Some(LayoutAction::MaximizeColumn),
+        ButtonName::RightStick => Some(LayoutAction::ToggleFullscreen),
+        ButtonName::South
+        | ButtonName::East
+        | ButtonName::North
+        | ButtonName::West
+        | ButtonName::Select
+        | ButtonName::Record
+        | ButtonName::Start
+        | ButtonName::Guide
+        | ButtonName::DpadUp
+        | ButtonName::DpadDown
+        | ButtonName::DpadLeft
+        | ButtonName::DpadRight
+        | ButtonName::Paddle1
+        | ButtonName::Paddle2
+        | ButtonName::Paddle3
+        | ButtonName::Paddle4 => None,
+    }
+}
+
+/// At the columns level the shoulders, triggers and stick clicks drive the layout and never reach the app.
+fn columns_level(state: &State, event: &Event) -> Option<Vec<Action>> {
     let Event::Button { name, state: button } = event else {
         return None;
     };
-    let action = match (state.level, name) {
-        (Level::Columns, ButtonName::LeftBumper) => LayoutAction::FocusColumnLeft,
-        (Level::Columns, ButtonName::RightBumper) => LayoutAction::FocusColumnRight,
-        _ => return None,
-    };
+    if state.level != Level::Columns {
+        return None;
+    }
+    let action = columns_level_action(*name)?;
     Some(match button {
         ButtonState::Pressed => vec![Action::Layout { action }],
         ButtonState::Released => Vec::new(),
@@ -1200,19 +1239,45 @@ fn guide_button(state: &mut State, button_state: ButtonState) {
 
 /// Guide with the d-pad: at the app level it focuses the neighbouring column or workspace, at the columns level it moves
 /// the focused column.
+const fn guide_dpad_action(level: Level, name: ButtonName) -> Option<LayoutAction> {
+    match (level, name) {
+        (Level::App, ButtonName::DpadUp) => Some(LayoutAction::FocusWorkspaceUp),
+        (Level::App, ButtonName::DpadDown) => Some(LayoutAction::FocusWorkspaceDown),
+        (Level::App, ButtonName::DpadLeft) => Some(LayoutAction::FocusColumnLeft),
+        (Level::App, ButtonName::DpadRight) => Some(LayoutAction::FocusColumnRight),
+        (Level::Columns, ButtonName::DpadUp) => Some(LayoutAction::MoveColumnToWorkspaceUp),
+        (Level::Columns, ButtonName::DpadDown) => Some(LayoutAction::MoveColumnToWorkspaceDown),
+        (Level::Columns, ButtonName::DpadLeft) => Some(LayoutAction::MoveColumnLeft),
+        (Level::Columns, ButtonName::DpadRight) => Some(LayoutAction::MoveColumnRight),
+        (
+            Level::App | Level::Columns,
+            ButtonName::South
+            | ButtonName::East
+            | ButtonName::North
+            | ButtonName::West
+            | ButtonName::LeftBumper
+            | ButtonName::RightBumper
+            | ButtonName::LeftTrigger
+            | ButtonName::RightTrigger
+            | ButtonName::Select
+            | ButtonName::Record
+            | ButtonName::Start
+            | ButtonName::Guide
+            | ButtonName::LeftStick
+            | ButtonName::RightStick
+            | ButtonName::Paddle1
+            | ButtonName::Paddle2
+            | ButtonName::Paddle3
+            | ButtonName::Paddle4,
+        ) => None,
+    }
+}
+
 fn guide_workspace(level: Level, name: ButtonName) -> Vec<Action> {
-    let action = match (level, name) {
-        (Level::App, ButtonName::DpadUp) => LayoutAction::FocusWorkspaceUp,
-        (Level::App, ButtonName::DpadDown) => LayoutAction::FocusWorkspaceDown,
-        (Level::App, ButtonName::DpadLeft) => LayoutAction::FocusColumnLeft,
-        (Level::App, ButtonName::DpadRight) => LayoutAction::FocusColumnRight,
-        (Level::Columns, ButtonName::DpadUp) => LayoutAction::MoveColumnToWorkspaceUp,
-        (Level::Columns, ButtonName::DpadDown) => LayoutAction::MoveColumnToWorkspaceDown,
-        (Level::Columns, ButtonName::DpadLeft) => LayoutAction::MoveColumnLeft,
-        (Level::Columns, ButtonName::DpadRight) => LayoutAction::MoveColumnRight,
-        _ => return Vec::new(),
-    };
-    vec![Action::Layout { action }]
+    guide_dpad_action(level, name)
+        .map(|action| Action::Layout { action })
+        .into_iter()
+        .collect()
 }
 
 /// A d-pad button in a Guide chord: one move per press, and its release stays in the chord even after Guide is up.
@@ -1307,6 +1372,7 @@ pub mod controller;
 pub mod windows;
 
 pub mod layout;
+pub mod layout_phrases;
 pub mod layout_trace;
 
 pub mod audio_source;
