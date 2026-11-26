@@ -685,13 +685,29 @@ fn routed_step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             released.push(adjuster_effect(&gauge, true));
         }
     }
+    let depth = state.frames.len();
+    let is_reply = matches!(
+        input,
+        Input::ClockRead(_)
+            | Input::PluginActive(_)
+            | Input::PluginRequest(_)
+            | Input::Supervised(_)
+            | Input::SecretConfirmation(_)
+            | Input::SpeechSent(_)
+            | Input::SpeechPolled(_)
+            | Input::Resume
+    );
     let (mut state, mut routed) = step_input(state, input);
     let mut effects = released;
     effects.append(&mut routed);
     release_on_open(&mut state, &mut effects);
     release_passthrough_overlays(&mut state, &mut effects);
     state.overlay_stack = open_overlays(&state);
-    run(state, effects)
+    if (is_reply && state.frames.len() == depth) || state.frames.len() > depth {
+        run(state, effects)
+    } else {
+        (state, effects)
+    }
 }
 
 /// Applies the focused context’s draft retention and terminal layout.

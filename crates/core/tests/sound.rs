@@ -13,8 +13,12 @@ mod tests {
     };
     use tehuti_protocol::{ButtonName, ButtonState, Event, Text, parse_context};
 
+    fn run(state: State, initial: Input) -> (State, Vec<Effect>) {
+        run_with_poll(state, initial, None)
+    }
+
     #[expect(clippy::too_many_lines, reason = "exhaustive dispatch test harness")]
-    fn run(mut state: State, initial: Input) -> (State, Vec<Effect>) {
+    fn run_with_poll(mut state: State, initial: Input, mut on_poll: Option<Input>) -> (State, Vec<Effect>) {
         let mut trace = Vec::new();
         let depth = state.busy();
         let (mut next, mut effects) = step(state, initial);
@@ -31,6 +35,12 @@ mod tests {
                     Effect::ConfirmSecret(_) => reply = Input::SecretConfirmation(false),
                     Effect::SpeechCommand(_) => reply = Input::SpeechSent(true),
                     Effect::PollSpeech(_) => reply = Input::SpeechPolled(Vec::new()),
+                    Effect::PollSources => {
+                        if let Some(injected) = on_poll.take() {
+                            let (updated, _) = step(state, injected);
+                            state = updated;
+                        }
+                    }
                     Effect::Handle(event) => {
                         let (handled, mut nested) = run(
                             state,
@@ -81,7 +91,6 @@ mod tests {
                     | Effect::Click { .. }
                     | Effect::MouseMode(_)
                     | Effect::InvalidReply
-                    | Effect::PollSources
                     | Effect::Chord(_)
                     | Effect::ConfirmPressed(_)
                     | Effect::ResetSecretFocus
@@ -239,6 +248,43 @@ mod tests {
         assert!(
             !effects.contains(&Effect::NextAudioOutput),
             "East must not cycle outputs while the system menu is open"
+        );
+    }
+
+    #[test]
+    fn reentrant_sound_reply_during_poll_sources_never_drops_a_button_event() {
+        let context = parse_context("app_id = 'test'\n[buttons.left_stick]\ntext = 'ok'\n").unwrap();
+        let state = State::new(tehuti_core::State::with_contexts(vec![context]));
+        let (state, _) = run(
+            state,
+            Input::Event {
+                event: Event::Focus {
+                    app_id: Some("test".into()),
+                    title: String::new(),
+                },
+                elapsed: Duration::ZERO,
+            },
+        );
+        let (_state, effects) = run_with_poll(
+            state,
+            Input::Event {
+                event: Event::Button {
+                    name: ButtonName::LeftStick,
+                    state: ButtonState::Pressed,
+                },
+                elapsed: Duration::ZERO,
+            },
+            Some(Input::MicrophoneMuted(None)),
+        );
+        assert!(
+            !effects.contains(&Effect::InvalidReply),
+            "reentrant sound reply must not corrupt the outer frame"
+        );
+        assert!(
+            effects
+                .iter()
+                .any(|effect| matches!(effect, Effect::Apply(tehuti_protocol::Action::Text { .. }))),
+            "LeftStick text action must still fire after reentrant reply: {effects:?}"
         );
     }
 
