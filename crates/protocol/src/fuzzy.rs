@@ -95,7 +95,7 @@ pub struct SpeechMatching {
 pub struct FuzzyMatch {
     /// The mapped phrase as the context file spells it.
     pub phrase: String,
-    pub action: Action,
+    pub actions: Vec<Action>,
     /// Similarity in thousandths; 1000 means the folded keys are equal.
     pub score: u16,
 }
@@ -105,7 +105,7 @@ pub struct FuzzyMatch {
 pub struct Candidate<'context> {
     pub phrase: &'context str,
     pub folded: &'context str,
-    pub action: Action,
+    pub actions: Vec<Action>,
 }
 
 /// Whether an action closes, quits or leaves the session, so a loose match must not fire it.
@@ -380,7 +380,7 @@ pub fn best_match<'context>(
         .iter()
         .filter(|(score, candidate)| {
             *score >= threshold.thousandths()
-                && (!destructive(&candidate.action) || *score >= DESTRUCTIVE_SCORE)
+                && (!candidate.actions.iter().any(destructive) || *score >= DESTRUCTIVE_SCORE)
         })
         .fold(None::<&(u16, Candidate<'context>)>, |best, scored| match best {
             Some(kept) if kept.0 >= scored.0 => Some(kept),
@@ -388,13 +388,13 @@ pub fn best_match<'context>(
         })?;
     let rival = scored
         .iter()
-        .filter(|(_, candidate)| candidate.action != best.action)
+        .filter(|(_, candidate)| candidate.actions != best.actions)
         .map(|(score, _)| *score)
         .max()
         .unwrap_or_default();
     (rival.saturating_add(MARGIN) <= *best_score).then(|| FuzzyMatch {
         phrase: best.phrase.into(),
-        action: best.action.clone(),
+        actions: best.actions.clone(),
         score: *best_score,
     })
 }

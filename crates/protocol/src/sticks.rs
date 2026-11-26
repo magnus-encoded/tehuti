@@ -101,7 +101,7 @@ pub struct StickMapping {
     /// The face button that must be held, or `None` for the unmodified layer.
     pub with: Option<ButtonName>,
     pub repeat: bool,
-    pub action: Action,
+    pub actions: Vec<Action>,
 }
 
 const FACE_BUTTONS: [ButtonName; 4] = [
@@ -145,7 +145,7 @@ pub(crate) fn parse_sticks(file: SticksFile) -> Result<Vec<StickMapping>, String
                     direction,
                     with: entry.with,
                     repeat: entry.repeat,
-                    action: entry.action.action(),
+                    actions: entry.action.actions(),
                 });
             }
         }

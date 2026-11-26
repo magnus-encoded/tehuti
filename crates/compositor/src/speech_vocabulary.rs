@@ -182,10 +182,10 @@ pub fn prompt(contexts: &[Context], app_id: Option<&str>, title: &str) -> String
         let mut mappings: Vec<_> = context.speech_mappings().collect();
         mappings.sort_by(|left, right| left.phrase.cmp(right.phrase));
         for mapping in mappings {
-            if actions.contains(&mapping.action) {
+            if actions.contains(&mapping.actions) {
                 continue;
             }
-            actions.push(mapping.action);
+            actions.push(mapping.actions);
             words.extend(mapping.phrase.split_whitespace());
         }
     }

@@ -233,8 +233,8 @@ fn report_voice_only(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::C
             .speech_mappings()
             .filter(|mapping| {
                 matches!(
-                    mapping.action,
-                    Action::Layout { .. } | Action::Close | Action::ToggleTicker | Action::UndoDictation
+                    mapping.actions.as_slice(),
+                    [Action::Layout { .. } | Action::Close | Action::ToggleTicker | Action::UndoDictation]
                 )
             })
             .filter(|mapping| {
@@ -245,7 +245,7 @@ fn report_voice_only(report: &mut Report, loaded: &[(PathBuf, tehuti_protocol::C
                     .any(|other| {
                         other
                             .mapped_buttons()
-                            .any(|button| other.action_for(button).as_ref() == Some(&mapping.action))
+                            .any(|button| other.actions_for(button).as_ref() == Some(&mapping.actions))
                     })
             })
             .collect();

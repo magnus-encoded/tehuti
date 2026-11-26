@@ -4914,7 +4914,7 @@ fn fuzzy_route_reports_the_phrase_and_score_for_logging() {
         plugin: false,
         fuzzy: Some(tehuti_protocol::FuzzyMatch {
             phrase: "Start Bærekraft.".into(),
-            action: action.clone(),
+            actions: vec![action.clone()],
             score: 1000
         }),
     }));

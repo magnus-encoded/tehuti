@@ -313,6 +313,12 @@ pub fn action_pieces(action: &Action) -> Vec<Piece> {
     }
 }
 
+/// What a sequence of actions does as pieces, each step's pieces in order.
+#[must_use]
+pub fn actions_pieces(actions: &[Action]) -> Vec<Piece> {
+    actions.iter().flat_map(action_pieces).collect()
+}
+
 const fn layout_text(action: LayoutAction) -> &'static str {
     match action {
         LayoutAction::FocusColumnLeft => "Column left",
@@ -353,14 +359,16 @@ impl Entry {
         format!("{} -> {}", join(&self.trigger), join(&self.result))
     }
 
-    fn new(trigger: Vec<Piece>, action: &Action, icon: Option<&str>) -> Self {
-        let result = icon.or_else(|| built_in_icon(action)).map_or_else(
-            || action_pieces(action),
+    fn new_actions(trigger: Vec<Piece>, actions: &[Action], icon: Option<&str>) -> Self {
+        let result = icon.or_else(|| default_icon(actions)).map_or_else(
+            || actions_pieces(actions),
             |icon| {
                 vec![Piece::Icon {
                     icon: icon.into(),
-                    fallback: icon_label(icon)
-                        .map_or_else(|| action_pieces(action), |label| vec![Piece::Text(label.into())]),
+                    fallback: icon_label(icon).map_or_else(
+                        || actions_pieces(actions),
+                        |label| vec![Piece::Text(label.into())],
+                    ),
                 }]
             },
         );
@@ -479,25 +487,25 @@ fn button_entries(
             if level == crate::Level::Columns
                 && let Some(action) = column_action(*button)
             {
-                return Some(Entry::new(trigger, &action, None));
+                return Some(Entry::new_actions(trigger, &[action], None));
             }
             if let Some(entry) = label_entry(active, *button, pad) {
                 return Some(entry);
             }
             let context = active
-                .filter(|context| context.action_for(*button).is_some())
+                .filter(|context| context.maps_button(*button))
                 .or(if passthrough { None } else { global });
-            let action = context
-                .and_then(|context| context.action_for(*button))
+            let actions = context
+                .and_then(|context| context.actions_for(*button))
                 .or_else(|| {
-                    (!passthrough && *button == pad.button(crate::pad::Role::Confirm)).then_some(
-                        Action::Key {
+                    (!passthrough && *button == pad.button(crate::pad::Role::Confirm)).then(|| {
+                        vec![Action::Key {
                             key: KeyName::Enter,
                             mods: Vec::new(),
-                        },
-                    )
+                        }]
+                    })
                 })?;
-            Some(mapped_entry(trigger, context, *button, &action))
+            Some(mapped_entry(trigger, context, *button, &actions))
         })
         .collect()
 }
@@ -515,8 +523,10 @@ fn stick_entries(active: Option<&Context>, pad: PadFamily, modifier: Option<Butt
                 let mut trigger =
                     modifier.map_or_else(Vec::new, |held| vec![pad.piece(held), Piece::Text("+".into())]);
                 trigger.push(Piece::Chip(format!("{side}{}", direction.arrow())));
-                let mut entry = Entry::new(trigger, &mapping.action, None);
-                if let Some(name) = key_name(context, &mapping.action) {
+                let mut entry = Entry::new_actions(trigger, &mapping.actions, None);
+                if let [action] = mapping.actions.as_slice()
+                    && let Some(name) = key_name(context, action)
+                {
                     entry.result = vec![Piece::Text(name.into())];
                 }
                 Some(entry)
@@ -571,10 +581,12 @@ fn mapped_entry(
     trigger: Vec<Piece>,
     context: Option<&Context>,
     button: ButtonName,
-    action: &Action,
+    actions: &[Action],
 ) -> Entry {
-    let mut entry = Entry::new(trigger, action, None);
-    if let Some(name) = context.and_then(|context| key_name(context, action)) {
+    let mut entry = Entry::new_actions(trigger, actions, None);
+    if let [action] = actions
+        && let Some(name) = context.and_then(|context| key_name(context, action))
+    {
         entry.result = vec![Piece::Text(name.into())];
     }
     if context.and_then(|context| context.held_key_for(button)).is_some() {
@@ -622,12 +634,32 @@ fn chord_pieces(chord: &[ButtonName], pad: PadFamily) -> Vec<Piece> {
     pieces
 }
 
+fn default_icon(actions: &[Action]) -> Option<&'static str> {
+    match actions {
+        [single] => built_in_icon(single),
+        _ => None,
+    }
+}
+
+fn format_speech_trigger(phrases: &[String]) -> String {
+    let mut trigger = phrases
+        .iter()
+        .take(PHRASES_SHOWN)
+        .map(|phrase| format!("\"{phrase}\""))
+        .collect::<Vec<_>>()
+        .join(" / ");
+    if phrases.len() > PHRASES_SHOWN {
+        trigger.push_str(" /\u{2026}");
+    }
+    trigger
+}
+
 fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: TickerSpeech) -> Vec<Entry> {
     if shown == TickerSpeech::None {
         return Vec::new();
     }
     let mut seen = std::collections::HashSet::new();
-    let mut groups: Vec<(Action, Option<String>, Vec<String>)> = Vec::new();
+    let mut groups: Vec<(Vec<Action>, Option<String>, Vec<String>)> = Vec::new();
     let contexts = if shown == TickerSpeech::Own {
         vec![active.or(global)]
     } else {
@@ -638,7 +670,7 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
             if !seen.insert(normalize_phrase(mapping.phrase)) {
                 continue;
             }
-            let icon = mapping.icon.or_else(|| built_in_icon(&mapping.action));
+            let icon = mapping.icon.or_else(|| default_icon(&mapping.actions));
             if shown == TickerSpeech::Icons && icon.is_none() {
                 continue;
             }
@@ -646,10 +678,10 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
             let icon = icon.map(str::to_owned);
             match groups
                 .iter_mut()
-                .find(|(action, group_icon, _)| *action == mapping.action && *group_icon == icon)
+                .find(|(actions, group_icon, _)| *actions == mapping.actions && *group_icon == icon)
             {
                 Some((_, _, phrases)) => phrases.push(phrase),
-                None => groups.push((mapping.action, icon, vec![phrase])),
+                None => groups.push((mapping.actions, icon, vec![phrase])),
             }
         }
     }
@@ -669,17 +701,12 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
     });
     groups
         .into_iter()
-        .map(|(action, icon, phrases)| {
-            let mut trigger = phrases
-                .iter()
-                .take(PHRASES_SHOWN)
-                .map(|phrase| format!("\"{phrase}\""))
-                .collect::<Vec<_>>()
-                .join(" / ");
-            if phrases.len() > PHRASES_SHOWN {
-                trigger.push_str(" /\u{2026}");
-            }
-            Entry::new(vec![Piece::Text(trigger)], &action, icon.as_deref())
+        .map(|(actions, icon, phrases)| {
+            Entry::new_actions(
+                vec![Piece::Text(format_speech_trigger(&phrases))],
+                &actions,
+                icon.as_deref(),
+            )
         })
         .collect()
 }
@@ -688,7 +715,7 @@ fn speech_entries(active: Option<&Context>, global: Option<&Context>, shown: Tic
 fn display_phrase(phrase: &str) -> String {
     phrase
         .trim()
-        .trim_end_matches(|character: char| !character.is_alphanumeric())
+        .trim_end_matches(|character: char| !character.is_alphanumeric() && character != '>')
         .into()
 }
 

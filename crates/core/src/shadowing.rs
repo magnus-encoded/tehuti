@@ -82,7 +82,7 @@ fn shadowing_why(view: &OwnershipView, context: &Context, button: ButtonName) ->
         Some(Why::EscapeChord)
     } else if matches!(owner, Owner::Talk(_)) {
         Some(Why::PushToTalk)
-    } else if owner == Owner::GlobalLayer && context.action_for(button) != Some(GLOBAL_ENTER) {
+    } else if owner == Owner::GlobalLayer && context.actions_for(button).as_deref() != Some(&[GLOBAL_ENTER]) {
         Some(Why::GlobalEnter)
     } else {
         None

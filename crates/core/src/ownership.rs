@@ -425,7 +425,7 @@ impl State {
             .into_iter()
             .filter(|button| {
                 focused
-                    .filter(|context| context.action_for(*button).is_some())
+                    .filter(|context| context.maps_button(*button))
                     .or(global)
                     .is_some_and(|context| context.held_key_for(*button).is_some())
             })

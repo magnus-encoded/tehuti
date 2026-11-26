@@ -23,7 +23,7 @@ mod sticks {
         let left = context
             .stick_mapping(Stick::Left, StickDirection::Left, None)
             .unwrap();
-        assert_eq!(left.action, key(KeyName::Left), "left.left sends Left");
+        assert_eq!(left.actions, vec![key(KeyName::Left)], "left.left sends Left");
         assert!(left.repeat, "sticks repeat by default");
         assert!(
             context
@@ -34,8 +34,8 @@ mod sticks {
         assert_eq!(
             context
                 .stick_mapping(Stick::Left, StickDirection::Up, Some(ButtonName::North))
-                .map(|mapping| mapping.action.clone()),
-            Some(key(KeyName::Up)),
+                .map(|mapping| mapping.actions.clone()),
+            Some(vec![key(KeyName::Up)]),
         );
         assert!(context.stick_modifier(ButtonName::North), "north is a modifier");
         assert!(context.stick_modifier(ButtonName::East), "east is a modifier");

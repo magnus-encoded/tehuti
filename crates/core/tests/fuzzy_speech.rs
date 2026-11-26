@@ -61,7 +61,7 @@ mod fuzzy_speech {
         let (state, actions) = route("[speech_matching]\nfuzzy = true", "", phrase);
         assert_eq!(actions, vec![launch("game")]);
         let matched = state.fuzzy_speech_match(phrase).unwrap();
-        assert_eq!(matched.action, launch("game"));
+        assert_eq!(matched.actions, vec![launch("game")]);
         assert!(matched.score >= 800);
     }
 

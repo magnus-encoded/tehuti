@@ -733,7 +733,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     }
     if let Some(action) = global_layer(&state, event) {
         let actions = if focused_maps(&state, event) {
-            hold_key(&mut state, event).unwrap_or_else(|| active_context(&state, event).into_iter().collect())
+            hold_key(&mut state, event).unwrap_or_else(|| active_context(&state, event).unwrap_or_default())
         } else {
             vec![action]
         };
@@ -754,10 +754,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if let Some(actions) = spoken_key_actions(&state, event) {
         return (state, actions, false);
     }
-    let actions = active_context(&state, event)
-        .or_else(|| fallback(event))
-        .into_iter()
-        .collect();
+    let actions = active_context(&state, event).unwrap_or_else(|| fallback(event).into_iter().collect());
     (state, actions, false)
 }
 
@@ -819,14 +816,15 @@ pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<Stri
     {
         return None;
     }
-    let action = route_speech(focused, global, phrase)?;
-    let fell_through = if let Action::Notice { text } = &action {
+    let actions = route_speech(focused, global, phrase)?;
+    let fell_through = if let [Action::Notice { text }] = actions.as_slice() {
         text.as_str() == NO_MAPPING_NOTICE
     } else {
-        [focused, global]
-            .into_iter()
-            .flatten()
-            .any(|context| context.unmatched_speech_action(phrase).as_ref() == Some(&action))
+        [focused, global].into_iter().flatten().any(|context| {
+            context
+                .unmatched_speech_action(phrase)
+                .is_some_and(|action| actions == [action])
+        })
     };
     if !fell_through {
         return None;
@@ -846,23 +844,31 @@ pub fn unmatched_speech_commands(state: &State, phrase: &str) -> Option<Vec<Stri
 
 /// Every exact match in chain order, then the built-in close, then folded
 /// matches, then plurals, then prefix rules, then fuzzy, then unmatched dictation.
-fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Action> {
+fn route_speech(focused: Option<&Context>, global: Option<&Context>, phrase: &str) -> Option<Vec<Action>> {
     focused
-        .and_then(|context| context.mapped_speech_action(phrase))
-        .or_else(|| global.and_then(|context| context.mapped_speech_action(phrase)))
-        .or_else(|| (tehuti_protocol::normalize_phrase(phrase) == "close").then_some(Action::Close))
-        .or_else(|| focused.and_then(|context| context.folded_speech_action(phrase)))
-        .or_else(|| global.and_then(|context| context.folded_speech_action(phrase)))
-        .or_else(|| focused.and_then(|context| context.plural_speech_action(phrase)))
-        .or_else(|| global.and_then(|context| context.plural_speech_action(phrase)))
-        .or_else(|| prefix_speech_action(focused, global, phrase))
-        .or_else(|| fuzzy_speech_match(focused, global, phrase).map(|matched| matched.action))
-        .or_else(|| focused.and_then(|context| context.unmatched_speech_action(phrase)))
-        .or_else(|| global.and_then(|context| context.unmatched_speech_action(phrase)))
+        .and_then(|context| context.mapped_speech_actions(phrase))
+        .or_else(|| global.and_then(|context| context.mapped_speech_actions(phrase)))
+        .or_else(|| (tehuti_protocol::normalize_phrase(phrase) == "close").then(|| vec![Action::Close]))
+        .or_else(|| focused.and_then(|context| context.folded_speech_actions(phrase)))
+        .or_else(|| global.and_then(|context| context.folded_speech_actions(phrase)))
+        .or_else(|| focused.and_then(|context| context.plural_speech_actions(phrase)))
+        .or_else(|| global.and_then(|context| context.plural_speech_actions(phrase)))
+        .or_else(|| prefix_speech_action(focused, global, phrase).map(|action| vec![action]))
+        .or_else(|| fuzzy_speech_match(focused, global, phrase).map(|matched| matched.actions))
+        .or_else(|| {
+            focused
+                .and_then(|context| context.unmatched_speech_action(phrase))
+                .map(|action| vec![action])
+        })
+        .or_else(|| {
+            global
+                .and_then(|context| context.unmatched_speech_action(phrase))
+                .map(|action| vec![action])
+        })
         .or_else(|| {
             tehuti_protocol::Text::new(NO_MAPPING_NOTICE.into())
                 .ok()
-                .map(|notice| Action::Notice { text: notice })
+                .map(|notice| vec![Action::Notice { text: notice }])
         })
 }
 
@@ -876,9 +882,9 @@ fn prefix_speech_action(focused: Option<&Context>, global: Option<&Context>, phr
 
 /// Whether a context maps the phrase exactly, folded or by plural.
 fn maps_phrase(context: &Context, phrase: &str) -> bool {
-    context.mapped_speech_action(phrase).is_some()
-        || context.folded_speech_action(phrase).is_some()
-        || context.plural_speech_action(phrase).is_some()
+    context.mapped_speech_actions(phrase).is_some()
+        || context.folded_speech_actions(phrase).is_some()
+        || context.plural_speech_actions(phrase).is_some()
 }
 
 fn spoken_key_actions(state: &State, event: &Event) -> Option<Vec<Action>> {
@@ -905,7 +911,7 @@ fn focused_maps(state: &State, event: &Event) -> bool {
     let Event::Button { name, .. } = event else {
         return false;
     };
-    focused_context(state).is_some_and(|context| context.action_for(*name).is_some())
+    focused_context(state).is_some_and(|context| context.maps_button(*name))
 }
 
 /// A face button named by `[sticks]` `with` gates stick mappings while held; a tap
@@ -962,7 +968,7 @@ fn hold_key(state: &mut State, event: &Event) -> Option<Vec<Action>> {
         return None;
     }
     let key = focused_context(state)
-        .filter(|context| context.action_for(*name).is_some())
+        .filter(|context| context.maps_button(*name))
         .or_else(|| global_context(state))
         .and_then(|context| context.held_key_for(*name))?;
     if state.held_keys.iter().any(|(held, _)| held == name) {
@@ -991,7 +997,7 @@ fn global_layer(state: &State, event: &Event) -> Option<Action> {
     }
 }
 
-fn active_context(state: &State, event: &Event) -> Option<Action> {
+fn active_context(state: &State, event: &Event) -> Option<Vec<Action>> {
     if let Event::Speech { text } = event {
         if text.as_str().trim().is_empty() {
             return None;
@@ -1026,7 +1032,7 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
             }
         }
         if state.level == Level::App && unit_verbs::is_scratch_that(phrase) {
-            return Some(Action::UndoDictation);
+            return Some(vec![Action::UndoDictation]);
         }
         let focused = focused_context(state);
         let global = global_context(state);
@@ -1040,8 +1046,8 @@ fn active_context(state: &State, event: &Event) -> Option<Action> {
         return None;
     };
     focused_context(state)
-        .and_then(|context| context.action_for(*name))
-        .or_else(|| global_context(state).and_then(|context| context.action_for(*name)))
+        .and_then(|context| context.actions_for(*name))
+        .or_else(|| global_context(state).and_then(|context| context.actions_for(*name)))
 }
 
 /// The phrase `phrase` matches only fuzzily, under the focused context's `fuzzy`

@@ -527,7 +527,7 @@ pub struct LauncherSettings {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SpeechMapping<'context> {
     pub phrase: &'context str,
-    pub action: Action,
+    pub actions: Vec<Action>,
     pub icon: Option<&'context str>,
 }
 
@@ -580,7 +580,7 @@ struct SpeechEntry {
 
 impl SpeechEntry {
     fn is_template(&self) -> bool {
-        self.phrase.ends_with("<name>") || self.phrase.ends_with("<project>")
+        speech_templates::is_template(&self.phrase)
     }
 }
 
@@ -829,7 +829,7 @@ impl Context {
                     Candidate {
                         phrase: &entry.phrase,
                         folded: &entry.folded,
-                        action: entry.action.action(),
+                        actions: entry.action.actions(),
                     },
                 )
             })
@@ -845,7 +845,7 @@ impl Context {
     pub fn speech_mappings(&self) -> impl Iterator<Item = SpeechMapping<'_>> {
         self.speech.values().map(|entry| SpeechMapping {
             phrase: &entry.phrase,
-            action: entry.action.action(),
+            actions: entry.action.actions(),
             icon: entry.icon.as_ref().map(Text::as_str),
         })
     }
@@ -907,11 +907,21 @@ impl Context {
 
     #[must_use]
     pub fn speech_action(&self, phrase: &str) -> Option<Action> {
-        self.mapped_speech_action(phrase)
-            .or_else(|| self.folded_speech_action(phrase))
-            .or_else(|| self.plural_speech_action(phrase))
-            .or_else(|| self.prefix_speech_action(phrase).flatten())
-            .or_else(|| self.unmatched_speech_action(phrase))
+        single_action(self.speech_actions(phrase)?)
+    }
+
+    /// Every action a phrase resolves to in this context, including multi-step sequences.
+    #[must_use]
+    pub fn speech_actions(&self, phrase: &str) -> Option<Vec<Action>> {
+        self.mapped_speech_actions(phrase)
+            .or_else(|| self.folded_speech_actions(phrase))
+            .or_else(|| self.plural_speech_actions(phrase))
+            .or_else(|| {
+                self.prefix_speech_action(phrase)
+                    .flatten()
+                    .map(|action| vec![action])
+            })
+            .or_else(|| self.unmatched_speech_action(phrase).map(|action| vec![action]))
     }
 
     /// What a `text_after` prefix rule makes of the phrase: `None` when no rule
@@ -951,19 +961,25 @@ impl Context {
     /// The action of a mapped phrase only, ignoring `unmatched_speech`.
     #[must_use]
     pub fn mapped_speech_action(&self, phrase: &str) -> Option<Action> {
+        single_action(self.mapped_speech_actions(phrase)?)
+    }
+
+    /// The actions of a mapped phrase only, ignoring `unmatched_speech`.
+    #[must_use]
+    pub fn mapped_speech_actions(&self, phrase: &str) -> Option<Vec<Action>> {
         if phrase.trim().is_empty() {
             return None;
         }
         self.speech
             .get(&normalize_phrase(phrase))
             .filter(|entry| !entry.is_template())
-            .map(|entry| entry.action.action())
+            .map(|entry| entry.action.actions())
             .or_else(|| {
                 let mut matches = self.speech.values().filter_map(|entry| {
                     speech_templates::expand(&entry.phrase, &entry.action, phrase, &self.projects)
                 });
                 let first = matches.next()?;
-                matches.all(|action| action == first).then_some(first)
+                matches.all(|actions| actions == first).then_some(first)
             })
     }
 
@@ -984,8 +1000,14 @@ impl Context {
     /// fold; callers try it only once no exact phrase matched anywhere.
     #[must_use]
     pub fn folded_speech_action(&self, phrase: &str) -> Option<Action> {
+        single_action(self.folded_speech_actions(phrase)?)
+    }
+
+    /// The actions of a phrase the transcript matches once digits and hyphens fold.
+    #[must_use]
+    pub fn folded_speech_actions(&self, phrase: &str) -> Option<Vec<Action>> {
         self.variant_lookup(&speech_variant_key(phrase))
-            .map(|entry| entry.action.action())
+            .map(|entry| entry.action.actions())
     }
 
     fn variant_lookup(&self, variant: &str) -> Option<&SpeechEntry> {
@@ -1000,6 +1022,12 @@ impl Context {
     /// callers try it only once no exact or folded phrase matched anywhere.
     #[must_use]
     pub fn plural_speech_action(&self, phrase: &str) -> Option<Action> {
+        single_action(self.plural_speech_actions(phrase)?)
+    }
+
+    /// The actions of a phrase whose last word is the plain plural or singular of the transcript's.
+    #[must_use]
+    pub fn plural_speech_actions(&self, phrase: &str) -> Option<Vec<Action>> {
         const SHORTEST: usize = 4;
         let long_enough =
             |word: &str| word.chars().filter(|character| character.is_alphabetic()).count() >= SHORTEST;
@@ -1014,7 +1042,7 @@ impl Context {
                     .then(|| self.variant_lookup(&format!("{before}{last}s")))
                     .flatten()
             })
-            .map(|entry| entry.action.action())
+            .map(|entry| entry.action.actions())
     }
 
     /// Supplies discovered project names and absolute paths for `<project>` templates.
@@ -1039,6 +1067,7 @@ impl Context {
         self.buttons.get(&button).and_then(|action| match action {
             MappingAction::Key { key, mods, .. } => mods.is_empty().then_some(*key),
             MappingAction::Text { .. }
+            | MappingAction::Sequence { .. }
             | MappingAction::Secret { .. }
             | MappingAction::Launch { .. }
             | MappingAction::Close { .. }
@@ -1050,9 +1079,23 @@ impl Context {
         })
     }
 
+    /// Whether this context's `[buttons]` table maps `button`.
+    #[must_use]
+    pub fn maps_button(&self, button: ButtonName) -> bool {
+        self.buttons.contains_key(&button)
+    }
+
     #[must_use]
     pub fn action_for(&self, button: ButtonName) -> Option<Action> {
-        self.buttons.get(&button).map(MappingAction::action)
+        self.buttons
+            .get(&button)
+            .and_then(|mapping| single_action(mapping.actions()))
+    }
+
+    /// Every action `button` sends on press, including multi-step sequences.
+    #[must_use]
+    pub fn actions_for(&self, button: ButtonName) -> Option<Vec<Action>> {
+        self.buttons.get(&button).map(MappingAction::actions)
     }
 
     /// The key a `hold = true` mapping keeps down while `button` is held.
@@ -1062,6 +1105,7 @@ impl Context {
             MappingAction::Key { key, hold: true, .. } => Some(*key),
             MappingAction::Key { hold: false, .. }
             | MappingAction::Text { .. }
+            | MappingAction::Sequence { .. }
             | MappingAction::Secret { .. }
             | MappingAction::Launch { .. }
             | MappingAction::Close { .. }
@@ -1072,6 +1116,10 @@ impl Context {
             | MappingAction::UndoDictation { .. } => None,
         }
     }
+}
+
+fn single_action(mut actions: Vec<Action>) -> Option<Action> {
+    (actions.len() == 1).then(|| actions.pop()).flatten()
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -1130,6 +1178,56 @@ struct ContextFile {
     launcher: LauncherSettings,
 }
 
+/// One atomic step of a `{ sequence = [...] }` mapping: a key tap or typed text.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[serde(untagged)]
+enum SequenceStep {
+    Key {
+        key: KeyName,
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        mods: Vec<Modifier>,
+    },
+    Text {
+        text: Text,
+    },
+}
+
+impl SequenceStep {
+    fn action(&self) -> Action {
+        match self {
+            Self::Key { key, mods } => Action::Key {
+                key: *key,
+                mods: mods.clone(),
+            },
+            Self::Text { text } => Action::Text { text: text.clone() },
+        }
+    }
+}
+
+/// A validated, non-empty ordered list of key or text steps.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(transparent)]
+struct Sequence(Vec<SequenceStep>);
+
+impl Sequence {
+    fn steps(&self) -> &[SequenceStep] {
+        &self.0
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for Sequence {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        let steps = Vec::<SequenceStep>::deserialize(deserializer)?;
+        if steps.is_empty() {
+            return Err(serde::de::Error::custom(
+                "sequence must contain at least one step",
+            ));
+        }
+        Ok(Self(steps))
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 #[serde(untagged)]
@@ -1143,6 +1241,9 @@ enum MappingAction {
     },
     Text {
         text: Text,
+    },
+    Sequence {
+        sequence: Sequence,
     },
     Secret {
         secret: SecretReference,
@@ -1221,25 +1322,26 @@ enum TickerMapping {
 }
 
 impl MappingAction {
-    fn action(&self) -> Action {
+    fn actions(&self) -> Vec<Action> {
         match self {
-            Self::Launch { launch } => Action::Launch {
+            Self::Launch { launch } => vec![Action::Launch {
                 desktop_entry: launch.clone(),
-            },
-            Self::Close { .. } => Action::Close,
-            Self::Restart { .. } => Action::Restart,
-            Self::Notify { notify } => Action::Notice { text: notify.clone() },
-            Self::Key { key, mods, .. } => Action::Key {
+            }],
+            Self::Close { .. } => vec![Action::Close],
+            Self::Restart { .. } => vec![Action::Restart],
+            Self::Notify { notify } => vec![Action::Notice { text: notify.clone() }],
+            Self::Key { key, mods, .. } => vec![Action::Key {
                 key: *key,
                 mods: mods.clone(),
-            },
-            Self::Text { text } => Action::Text { text: text.clone() },
-            Self::Secret { secret } => Action::SecretRequest {
+            }],
+            Self::Text { text } => vec![Action::Text { text: text.clone() }],
+            Self::Sequence { sequence } => sequence.steps().iter().map(SequenceStep::action).collect(),
+            Self::Secret { secret } => vec![Action::SecretRequest {
                 reference: secret.clone(),
-            },
-            Self::Layout { layout } => Action::Layout { action: *layout },
-            Self::Ticker { .. } => Action::ToggleTicker,
-            Self::UndoDictation { .. } => Action::UndoDictation,
+            }],
+            Self::Layout { layout } => vec![Action::Layout { action: *layout }],
+            Self::Ticker { .. } => vec![Action::ToggleTicker],
+            Self::UndoDictation { .. } => vec![Action::UndoDictation],
         }
     }
 }
@@ -1334,7 +1436,7 @@ fn unknown_key_name(source: &str) -> Option<String> {
 /// The TOML error, or one naming the unknown key the untagged mapping enum hid.
 fn key_error(source: &str, error: &toml::de::Error) -> String {
     let message = error.to_string();
-    if message.contains("MappingAction")
+    if (message.contains("MappingAction") || message.contains("SequenceStep"))
         && let Some(bad) = unknown_key_name(source)
     {
         let mut lines = message.lines();
