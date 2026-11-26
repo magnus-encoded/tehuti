@@ -541,6 +541,33 @@ mod windows {
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
+    fn open_keyboard(driver: &mut Driver, compositor: &mut Compositor) {
+        let _opened = driver
+            .execute(
+                compositor,
+                Request::Say {
+                    text: "keyboard".into(),
+                },
+            )
+            .unwrap();
+        assert!(compositor.on_screen_keyboard().is_open());
+    }
+
+    fn keyboard_summaries(
+        compositor: &mut Compositor,
+        directory: &std::path::Path,
+    ) -> Vec<serde_json::Value> {
+        compositor
+            .control(tehuti::ctl::Command::Events, directory)
+            .unwrap()
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["kind"] == "keyboard_summary")
+            .cloned()
+            .collect()
+    }
+
     fn keyboard_summary_on_hide(hide: impl FnOnce(&mut Compositor, &std::path::Path)) {
         let directory = tempfile::tempdir().unwrap();
         let mut display = Display::<Compositor>::new().unwrap();
@@ -549,18 +576,7 @@ mod windows {
         let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
         let client = Client::new(&display, false);
         client.paint(&mut display, &mut compositor, [10, 20, 30, 255]);
-        let open = |driver: &mut Driver, compositor: &mut Compositor| {
-            let _opened = driver
-                .execute(
-                    compositor,
-                    Request::Say {
-                        text: "keyboard".into(),
-                    },
-                )
-                .unwrap();
-            assert!(compositor.on_screen_keyboard().is_open());
-        };
-        open(&mut driver, &mut compositor);
+        open_keyboard(&mut driver, &mut compositor);
         let _typed = driver
             .execute(
                 &mut compositor,
@@ -572,23 +588,12 @@ mod windows {
         hide(&mut compositor, directory.path());
         assert!(!compositor.on_screen_keyboard().is_open());
         assert_eq!(compositor.on_screen_keyboard().edit_counts(), (0, 0));
-        let summaries = |compositor: &mut Compositor| {
-            compositor
-                .control(tehuti::ctl::Command::Events, directory.path())
-                .unwrap()
-                .as_array()
-                .unwrap()
-                .iter()
-                .filter(|event| event["kind"] == "keyboard_summary")
-                .cloned()
-                .collect::<Vec<_>>()
-        };
-        let first = summaries(&mut compositor);
+        let first = keyboard_summaries(&mut compositor, directory.path());
         assert_eq!(first.len(), 1);
         assert_eq!(first[0]["character_edits"], 1);
         assert_eq!(first[0]["word_edits"], 0);
         assert_eq!(first[0]["inputs"]["letters"], 2);
-        open(&mut driver, &mut compositor);
+        open_keyboard(&mut driver, &mut compositor);
         let _closed = driver
             .execute(
                 &mut compositor,
@@ -597,7 +602,7 @@ mod windows {
                 },
             )
             .unwrap();
-        let both = summaries(&mut compositor);
+        let both = keyboard_summaries(&mut compositor, directory.path());
         assert_eq!(both.len(), 2);
         assert_eq!(both[1]["character_edits"], 0);
         assert_eq!(both[1]["word_edits"], 0);
@@ -605,7 +610,7 @@ mod windows {
         let _tick = driver
             .execute(&mut compositor, Request::Advance { milliseconds: 100 })
             .unwrap();
-        assert_eq!(summaries(&mut compositor), both);
+        assert_eq!(keyboard_summaries(&mut compositor, directory.path()), both);
         client.finish();
     }
 
