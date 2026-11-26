@@ -4,7 +4,7 @@ mod tests {
     use serde_json::{Value, json};
     use std::{
         io::{Read, Write},
-        os::unix::net::UnixStream,
+        os::unix::{fs::PermissionsExt, net::UnixStream},
         path::Path,
         process::{Command, Output},
         time::Instant,
@@ -21,7 +21,7 @@ mod tests {
     }
 
     fn await_events(path: &Path, needle: &str) -> String {
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
         loop {
             let text = std::fs::read_to_string(path).unwrap();
             if text.ends_with('\n') && text.contains(needle) {
@@ -68,6 +68,10 @@ mod tests {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one integration scenario owns the isolated session and its cleanup"
+    )]
     fn every_phase_one_command_reaches_an_isolated_session() {
         let root = tempfile::tempdir().unwrap();
         let config = root.path().join("contexts");
@@ -93,7 +97,6 @@ mod tests {
             "#!/bin/sh\nexec /usr/bin/touch \"$(dirname \"$0\")/desktop-launched\"\n",
         )
         .unwrap();
-        use std::os::unix::fs::PermissionsExt as _;
         std::fs::set_permissions(&launcher, std::fs::Permissions::from_mode(0o755)).unwrap();
         let driver = runtime.join("tehuti-drive.sock");
         let socket = runtime.join("tehuti-control/ctl");
@@ -121,15 +124,15 @@ mod tests {
             assert_eq!(query(&socket, &["windows"]), json!([]));
             assert_eq!(query(&socket, &["workspaces"])[0]["focused"], true);
             assert_eq!(query(&socket, &["outputs"])[0]["mode"]["width"], 320);
-            query(&socket, &["layout", "focus-workspace-down"]);
-            query(&socket, &["notice", "ctl test"]);
+            let _workspace_change = query(&socket, &["layout", "focus-workspace-down"]);
+            let _notice = query(&socket, &["notice", "ctl test"]);
             let scene: Value = serde_json::from_slice(&drive(&driver, &["scene", "--json"]).stdout).unwrap();
             assert_eq!(scene["notice"], "ctl test");
-            query(&socket, &["display", "scale", "2"]);
+            let _scale_up = query(&socket, &["display", "scale", "2"]);
             assert_eq!(query(&socket, &["outputs"])[0]["scale"], 2.0);
-            query(&socket, &["display", "scale", "1"]);
-            query(&socket, &["display", "mode", "640x480@60"]);
-            query(&socket, &["display", "mode", "--restore"]);
+            let _scale_restore = query(&socket, &["display", "scale", "1"]);
+            let _mode_change = query(&socket, &["display", "mode", "640x480@60"]);
+            let _mode_restore = query(&socket, &["display", "mode", "--restore"]);
             assert_eq!(query(&socket, &["outputs"])[0]["mode"]["width"], 320);
             let caller = root.path().join("caller");
             std::fs::create_dir(&caller).unwrap();
@@ -178,7 +181,7 @@ mod tests {
                 "org.example.Editor"
             );
             assert_eq!(query(&socket, &["plugin", "list"]), json!([]));
-            query(&socket, &["launch", "Example Editor"]);
+            let _desktop_launch = query(&socket, &["launch", "Example Editor"]);
             let deadline = Instant::now() + Duration::from_secs(3);
             while !bin.join("desktop-launched").exists() {
                 assert!(Instant::now() < deadline, "desktop application did not launch");
@@ -187,13 +190,13 @@ mod tests {
             assert!(!ctl(&socket, &["launch", "/bin/true"]).status.success());
             assert!(!ctl(&socket, &["launch", "missing.desktop"]).status.success());
             let marker = root.path().join("launched");
-            query(
+            let _command_launch = query(
                 &socket,
                 &["launch", "--command", "/usr/bin/touch", marker.to_str().unwrap()],
             );
-            let deadline = Instant::now() + Duration::from_secs(3);
+            let launch_deadline = Instant::now() + Duration::from_secs(3);
             while !marker.exists() {
-                assert!(Instant::now() < deadline);
+                assert!(Instant::now() < launch_deadline);
                 std::thread::sleep(Duration::from_millis(10));
             }
             for words in [
@@ -219,7 +222,7 @@ mod tests {
                 serde_json::from_str::<Value>(initial.lines().next().unwrap()).unwrap()["v"],
                 1
             );
-            query(&socket, &["notice", "event stream barrier"]);
+            let _barrier_notice = query(&socket, &["notice", "event stream barrier"]);
             let changed = await_events(&event_path, "event stream barrier");
             let records: Vec<Value> = changed
                 .lines()
@@ -240,7 +243,7 @@ mod tests {
             }));
             drop(event_process);
             malformed_requests_do_not_block(&socket);
-            query(&socket, &["session", "restart"]);
+            let _restart = query(&socket, &["session", "restart"]);
         });
         let _stopped = drive(&driver, &["stop"]);
         if let Err(panic) = checked {
@@ -259,7 +262,7 @@ mod tests {
             stream.set_read_timeout(Some(Duration::from_secs(3))).unwrap();
             stream.write_all(request).unwrap();
             let mut reply = String::new();
-            stream.read_to_string(&mut reply).unwrap();
+            let _read = stream.read_to_string(&mut reply).unwrap();
             assert!(
                 serde_json::from_str::<Value>(&reply)
                     .unwrap()
@@ -268,10 +271,14 @@ mod tests {
             );
             assert!(!reply.contains("hidden"));
         }
-        query(socket, &["status"]);
+        let _status = query(socket, &["status"]);
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one integration scenario owns the isolated session and its cleanup"
+    )]
     fn pad_and_on_screen_keyboard_input_produces_no_control_event() {
         let directory = tempfile::tempdir().unwrap();
         let display =
@@ -282,7 +289,7 @@ mod tests {
         let initial = compositor
             .control(tehuti::ctl::Command::Events, directory.path())
             .unwrap();
-        driver
+        let _pad_button = driver
             .execute(
                 &mut compositor,
                 tehuti::driver::Request::Press {
@@ -290,7 +297,7 @@ mod tests {
                 },
             )
             .unwrap();
-        driver
+        let _stick_sample = driver
             .execute(
                 &mut compositor,
                 tehuti::driver::Request::Stick {
@@ -305,7 +312,7 @@ mod tests {
                 .unwrap(),
             initial
         );
-        driver
+        let _keyboard_open = driver
             .execute(
                 &mut compositor,
                 tehuti::driver::Request::Say {
@@ -321,11 +328,11 @@ mod tests {
             tehuti_protocol::ButtonName::DpadRight,
             tehuti_protocol::ButtonName::South,
         ] {
-            driver
+            let _keyboard_button = driver
                 .execute(&mut compositor, tehuti::driver::Request::Press { button })
                 .unwrap();
         }
-        driver
+        let _text_entry = driver
             .execute(
                 &mut compositor,
                 tehuti::driver::Request::Text {
@@ -367,7 +374,7 @@ mod tests {
                 .unwrap(),
         );
         let socket = root.path().join("tehuti-control/ctl");
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
         while !socket.exists() {
             assert!(session.0.try_wait().unwrap().is_none(), "headless session exited");
             assert!(Instant::now() < deadline, "headless session did not bind control");
@@ -456,7 +463,9 @@ mod windows {
             .stderr(std::process::Stdio::piped())
             .spawn()
             .unwrap();
-        let deadline = std::time::Instant::now() + core::time::Duration::from_secs(5);
+        let deadline = std::time::Instant::now()
+            .checked_add(core::time::Duration::from_secs(5))
+            .unwrap();
         while child.try_wait().unwrap().is_none() && std::time::Instant::now() < deadline {
             server.poll(|command| compositor.control(command, directory));
             std::thread::sleep(core::time::Duration::from_millis(1));
@@ -472,6 +481,10 @@ mod windows {
     }
 
     #[test]
+    #[expect(
+        clippy::too_many_lines,
+        reason = "one integration scenario owns the isolated session and its cleanup"
+    )]
     fn window_ids_support_focus_layout_capture_and_close() {
         let directory = tempfile::tempdir().unwrap();
         let mut display = Display::<Compositor>::new().unwrap();
@@ -493,7 +506,7 @@ mod windows {
                 .iter()
                 .all(|window| window["app_id"] == "org.example.Game")
         );
-        let _reply = invoke(
+        let _focused = invoke(
             &mut server,
             &mut compositor,
             directory.path(),
@@ -503,7 +516,7 @@ mod windows {
             driver.execute(&mut compositor, Request::Scene).unwrap()["focus"],
             identity
         );
-        let _reply = invoke(
+        let _layout = invoke(
             &mut server,
             &mut compositor,
             directory.path(),
@@ -514,14 +527,14 @@ mod windows {
         assert_eq!(status["ok"]["focused"], true);
         assert!(status["ok"].get("focus").is_none());
         let path = directory.path().join("window.png");
-        let _reply = invoke(
+        let _capture = invoke(
             &mut server,
             &mut compositor,
             directory.path(),
             &["shot", "window", "window.png"],
         );
         assert!(image::image_dimensions(path).unwrap().0 > 0);
-        let _reply = invoke(
+        let _closed_window = invoke(
             &mut server,
             &mut compositor,
             directory.path(),
@@ -534,7 +547,7 @@ mod windows {
                 .len(),
             1
         );
-        let _reply = invoke(&mut server, &mut compositor, directory.path(), &["close"]);
+        let _closed_focused = invoke(&mut server, &mut compositor, directory.path(), &["close"]);
         assert_eq!(
             driver.execute(&mut compositor, Request::Scene).unwrap()["windows"],
             serde_json::json!([])
@@ -580,7 +593,7 @@ assert data == b'', data
             .arg(rustix::process::getuid().as_raw().to_string())
             .spawn()
             .unwrap();
-        let deadline = Instant::now() + Duration::from_secs(5);
+        let deadline = Instant::now().checked_add(Duration::from_secs(5)).unwrap();
         let mut called = false;
         while child.try_wait().unwrap().is_none() && Instant::now() < deadline {
             server.poll(|_| {
