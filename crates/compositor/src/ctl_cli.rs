@@ -96,18 +96,7 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
             .filter(|scale| (1..=8).contains(scale))
             .map(|scale| Command::DisplayScale { scale })
             .ok_or_else(|| "scale must be an integer from 1 to 8".into()),
-        ["shot"] | ["shot", "output"] => Ok(Command::Shot {
-            path: default_shot()?,
-        }),
-        ["shot", "output", path] | ["shot", path] if *path != "window" => Ok(Command::Shot {
-            path: caller_path(path)?,
-        }),
-        ["shot", "window"] => Ok(Command::ShotWindow {
-            path: default_shot()?,
-        }),
-        ["shot", "window", path] => Ok(Command::ShotWindow {
-            path: caller_path(path)?,
-        }),
+        ["shot", arguments @ ..] => parse_shot(arguments),
         ["context", "list"] => Ok(Command::ContextList),
         ["context", "active"] => Ok(Command::ContextActive),
         ["context", "reload"] => Ok(Command::ContextReload),
@@ -119,6 +108,24 @@ pub fn parse(words: &[String]) -> Result<Command, String> {
         ["session", "restart"] => Ok(Command::SessionRestart),
         [group, ..] => Err(not_yet(group)),
         [] => Err(USAGE.into()),
+    }
+}
+
+fn parse_shot(arguments: &[&str]) -> Result<Command, String> {
+    match arguments {
+        [] | ["output"] => Ok(Command::Shot {
+            path: default_shot()?,
+        }),
+        ["window"] => Ok(Command::ShotWindow {
+            path: default_shot()?,
+        }),
+        ["window", path] => Ok(Command::ShotWindow {
+            path: caller_path(path)?,
+        }),
+        [path] | ["output", path] => Ok(Command::Shot {
+            path: caller_path(path)?,
+        }),
+        _ => Err(not_yet("shot")),
     }
 }
 

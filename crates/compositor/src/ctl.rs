@@ -78,7 +78,8 @@ pub enum Command {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Event {
     Focus {
-        id: Option<u64>,
+        #[serde(rename = "id")]
+        identity: Option<u64>,
         focused: bool,
     },
     Context {
@@ -86,11 +87,13 @@ pub enum Event {
         title: Option<String>,
     },
     Workspace {
-        id: u64,
+        #[serde(rename = "id")]
+        identity: u64,
         focused: bool,
     },
     Window {
-        id: u64,
+        #[serde(rename = "id")]
+        identity: u64,
         focused: bool,
     },
     Mode {

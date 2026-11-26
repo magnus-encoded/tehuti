@@ -228,11 +228,13 @@ exactly one of `ok` or `error`. JSON output uses this envelope, including withou
 slow readers have bounded buffers and deadlines.
 
 `events` streams NDJSON state records with `v`, `event`, `sequence`, and `data`.
-It starts with a snapshot and emits changes while connected. `data.inputs`
-retains the last 128 input records with their own monotonically increasing
-sequence numbers; a gap means records were dropped. Button names and stick
-coordinates are visible, speech text and window titles are omitted. The stream
-never returns secret values, configuration contents or approval answers.
+It starts with a snapshot and emits changed snapshots while connected, using
+one sequence counter per subscription. `data` contains a typed list of focus,
+context, workspace, open window, output mode and notice records. A closed window
+is absent from the next snapshot. Window and workspace records use `id` and
+`focused`, as does `status`. Input has no event variant: button names, stick
+coordinates, key presses, typed text and speech never enter the stream. Window
+titles, secret values, configuration contents and approval answers are omitted.
 
 `display mode WIDTHxHEIGHT[@HZ]` chooses supported dimensions first, then
 refresh rate. Repeated requests retain the first restore point;

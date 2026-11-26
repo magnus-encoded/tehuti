@@ -191,11 +191,11 @@ impl Compositor {
     fn control_events(&self) -> Vec<crate::ctl::Event> {
         use crate::ctl::Event;
         let mut events = vec![Event::Focus {
-            id: self.placement.focused_destination(),
+            identity: self.placement.focused_destination(),
             focused: self.placement.focused_destination().is_some(),
         }];
         events.extend(self.placement.placed(|_| 0.0).iter().map(|window| Event::Window {
-            id: window.identity,
+            identity: window.identity,
             focused: window.focused,
         }));
         events.extend(self.contexts().iter().map(|context| Event::Context {
@@ -209,7 +209,7 @@ impl Compositor {
                     .iter()
                     .enumerate()
                     .map(|(index, workspace)| Event::Workspace {
-                        id: workspace.workspace.0,
+                        identity: workspace.workspace.0,
                         focused: index == output.active_workspace,
                     }),
             );
