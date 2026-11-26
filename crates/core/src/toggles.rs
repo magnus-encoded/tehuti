@@ -54,15 +54,12 @@ impl ModeToggle {
     #[must_use]
     pub fn display_name(&self) -> String {
         let mut chars = self.name.chars();
-        match chars.next() {
-            None => String::new(),
-            Some(first) => {
-                let mut text = String::with_capacity(self.name.len());
-                text.extend(first.to_uppercase());
-                text.push_str(chars.as_str());
-                text
-            }
-        }
+        chars.next().map_or_else(String::new, |first| {
+            let mut text = String::with_capacity(self.name.len());
+            text.extend(first.to_uppercase());
+            text.push_str(chars.as_str());
+            text
+        })
     }
 }
 
@@ -146,13 +143,10 @@ impl Toggles {
     #[must_use]
     pub fn parse_voice_destination(&self, phrase: &str) -> Option<(String, bool)> {
         let normalized = normalize_phrase(phrase);
-        let (target, active) = if let Some(target) = normalized.strip_suffix(" on") {
-            (target, true)
-        } else if let Some(target) = normalized.strip_suffix(" off") {
-            (target, false)
-        } else {
-            return None;
-        };
+        let (target, active) = normalized
+            .strip_suffix(" on")
+            .map(|target| (target, true))
+            .or_else(|| normalized.strip_suffix(" off").map(|target| (target, false)))?;
         self.items
             .iter()
             .find(|item| item.name == target)

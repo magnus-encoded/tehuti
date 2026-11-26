@@ -370,9 +370,9 @@ mod tests {
         Ok(())
     }
 
-    /// Writes the Toggles page and bar chips to `$SHOT_DIR` when set, for visual review.
+    /// Writes the Toggles page to `$SHOT_DIR/toggles-page.png` when set.
     #[test]
-    fn the_toggles_page_and_bar_can_be_written_as_screenshots() -> Result<(), Box<dyn core::error::Error>> {
+    fn the_toggles_page_can_be_written_as_a_screenshot() -> Result<(), Box<dyn core::error::Error>> {
         use tehuti_protocol::{ButtonName, ButtonState};
         let Some(directory) = std::env::var_os("SHOT_DIR") else {
             return Ok(());
@@ -401,14 +401,20 @@ mod tests {
             1280,
             720,
             &std::path::Path::new(&directory).join("toggles-page.png"),
-        )?;
+        )
+    }
 
-        for name in [
-            ButtonName::East,
-            ButtonName::East,
-            ButtonName::Guide,
-            ButtonName::DpadDown,
-        ] {
+    /// Writes the bar with a focused active mode chip to `$SHOT_DIR/toggles-bar.png` when set.
+    #[test]
+    fn the_toggles_bar_can_be_written_as_a_screenshot() -> Result<(), Box<dyn core::error::Error>> {
+        use tehuti_protocol::{ButtonName, ButtonState};
+        let Some(directory) = std::env::var_os("SHOT_DIR") else {
+            return Ok(());
+        };
+        let display = Display::<Compositor>::new()?;
+        let mut compositor = Compositor::new(&display.handle())?;
+        compositor.show_fixture("toggles")?;
+        for name in [ButtonName::Guide, ButtonName::DpadDown] {
             for state in [ButtonState::Pressed, ButtonState::Released] {
                 compositor.handle(&Event::Button { name, state });
             }
@@ -441,8 +447,7 @@ mod tests {
             1280,
             32,
             &std::path::Path::new(&directory).join("toggles-bar.png"),
-        )?;
-        Ok(())
+        )
     }
 
     #[test]

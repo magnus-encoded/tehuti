@@ -549,12 +549,13 @@ impl Session {
             }
             Method::Toggle { name, active } => {
                 let normalized = tehuti_protocol::normalize_phrase(&name);
-                if let Some(toggle) = self.toggles.iter_mut().find(|toggle| toggle.name() == normalized) {
-                    toggle.set_active(active);
-                    vec![Delivery::Toggles]
-                } else {
-                    Vec::new()
-                }
+                self.toggles
+                    .iter_mut()
+                    .find(|toggle| toggle.name() == normalized)
+                    .map_or_else(Vec::new, |toggle| {
+                        toggle.set_active(active);
+                        vec![Delivery::Toggles]
+                    })
             }
             Method::Adjuster { .. }
             | Method::Initialize(_)

@@ -271,6 +271,14 @@ for line in sys.stdin:
         }
     }
 
+    fn has_mode_chip(compositor: &Compositor, label: &str, tone: Tone) -> bool {
+        compositor
+            .voice_bar()
+            .segments()
+            .iter()
+            .any(|segment| segment.text == label && segment.tone == tone)
+    }
+
     #[test]
     fn plugin_registered_toggles_round_trip_over_stdio() {
         let directory = tempfile::tempdir().unwrap();
@@ -291,12 +299,8 @@ for line in sys.stdin:
                 .any(|item| item.name == "night light")
         });
         assert!(
-            compositor
-                .toggles()
-                .items()
-                .iter()
-                .any(|item| item.name == "night light" && !item.active),
-            "manifest toggle registers once the plugin initializes"
+            !compositor.toggles().is_active("night light"),
+            "manifest toggle starts inactive"
         );
 
         say(&mut compositor, "night light on");
@@ -305,12 +309,8 @@ for line in sys.stdin:
             "voice activates plugin toggle"
         );
         assert!(
-            compositor
-                .voice_bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "Night light" && segment.tone == Tone::Mode),
-            "active plugin toggle chip appears on bar"
+            has_mode_chip(&compositor, "Night light", Tone::Mode),
+            "active chip appears"
         );
 
         press(&mut compositor, ButtonName::Guide);
@@ -325,26 +325,18 @@ for line in sys.stdin:
             state.toggles().is_active("focus lens")
         });
         assert!(
-            compositor.toggles().is_active("focus lens"),
-            "runtime toggles notice replaces toggles"
-        );
-        assert!(
-            compositor
-                .voice_bar()
-                .segments()
-                .iter()
-                .any(|segment| segment.text == "Focus lens" && segment.tone == Tone::Mode),
-            "replacement active toggle shows on bar"
+            has_mode_chip(&compositor, "Focus lens", Tone::Mode),
+            "replacement chip shows"
         );
 
         let logged = std::fs::read_to_string(&log_path).unwrap();
         assert!(
             logged.contains(r#""name": "night light", "active": true"#),
-            "plugin received on notice"
+            "plugin got on"
         );
         assert!(
             logged.contains(r#""name": "night light", "active": false"#),
-            "plugin received off notice"
+            "plugin got off"
         );
     }
 }

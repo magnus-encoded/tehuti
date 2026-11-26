@@ -279,8 +279,17 @@ mod toggles {
             "confirm flips plugin toggle off"
         );
         assert!(mode_segments(&state).is_empty(), "chip disappears when off");
+    }
 
+    #[test]
+    fn late_arriving_plugin_toggles_join_end_without_moving_focus() {
         let first = Toggle::new("night light", false).unwrap();
+        let (state, _) = run(State::default(), Input::PluginToggles(vec![(4, first.clone())]));
+        let mut state = open_toggles_page(state);
+        for _ in 0..3 {
+            state = press(state, ButtonName::DpadRight).0;
+        }
+        assert_eq!(state.settings().toggles_focus, 3);
         let late = Toggle::new("stream mode", true).unwrap();
         let (state, _) = run(state, Input::PluginToggles(vec![(4, first), (7, late)]));
         assert_eq!(state.settings().toggles_focus, 3);
