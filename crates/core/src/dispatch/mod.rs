@@ -900,11 +900,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
             changed,
             kind,
         } => {
-            update_text_field(&mut state, *active, *changed, *kind);
-            if !active {
-                state.keyboard.set_surrounding(None);
-            }
-            if state.keyboard.password_field_active() {
+            if apply_text_field(&mut state, *active, *changed, *kind) {
                 return run_tasks(state, vec![Task::Speech(SpeechInput::Cancel)], effects);
             }
         }
@@ -962,6 +958,10 @@ fn run_tasks(mut state: State, tasks: Vec<Task>, effects: Vec<Effect>) -> (State
 }
 
 /// Inputs that only update the settings view.
+#[expect(
+    clippy::too_many_lines,
+    reason = "exhaustive match over every dispatch Input variant"
+)]
 fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {
@@ -1061,6 +1061,19 @@ fn update_sticks(state: &mut State, sticks: Sticks) {
         state.keyboard.left_stick(sticks.left.0, sticks.left.1);
         state.mouse.sticks = sticks;
     }
+}
+
+fn apply_text_field(
+    state: &mut State,
+    active: bool,
+    changed: bool,
+    kind: crate::keyboard::FieldKind,
+) -> bool {
+    update_text_field(state, active, changed, kind);
+    if !active {
+        state.keyboard.set_surrounding(None);
+    }
+    state.keyboard.password_field_active()
 }
 
 fn update_text_field(state: &mut State, active: bool, changed: bool, kind: crate::keyboard::FieldKind) {

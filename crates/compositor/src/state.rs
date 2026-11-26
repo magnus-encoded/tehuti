@@ -3688,38 +3688,14 @@ impl Compositor {
     #[must_use]
     pub fn voice_bar(&self) -> tehuti_core::bar::Bar {
         let snapshot = self.placement.snapshot();
-        let windows = self
-            .placement
-            .active_tiles()
-            .into_iter()
-            .filter_map(|(window, focused)| {
-                let toplevel = window.toplevel()?;
-                let title = smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
-                    let attributes = states
-                        .data_map
-                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()?;
-                    let attributes = attributes
-                        .lock()
-                        .unwrap_or_else(std::sync::PoisonError::into_inner);
-                    Some(self.dispatch.core().bar().window_label(
-                        self.dispatch.core().label(attributes.app_id.as_deref()),
-                        attributes.title.as_deref(),
-                        attributes.app_id.as_deref(),
-                    ))
-                })?;
-                Some((title, focused))
-            })
-            .collect();
+        let update = self.dispatch.update();
         let mut bar = self
             .dispatch
             .core()
             .bar()
             .clone()
-            .with_windows(windows)
-            .with_update(
-                self.dispatch.update().available().is_some(),
-                self.dispatch.update().chip_focused(),
-            );
+            .with_windows(self.window_bar_titles())
+            .with_update(update.available().is_some(), update.chip_focused());
         if let Some(identity) = self.placement.focused_destination()
             && let Some(name) = self
                 .launcher
@@ -3751,6 +3727,30 @@ impl Compositor {
             bar = bar.with_navigation(text);
         }
         self.recording_bar(bar)
+    }
+
+    fn window_bar_titles(&self) -> Vec<(String, bool)> {
+        self.placement
+            .active_tiles()
+            .into_iter()
+            .filter_map(|(window, focused)| {
+                let toplevel = window.toplevel()?;
+                let title = smithay::wayland::compositor::with_states(toplevel.wl_surface(), |states| {
+                    let attributes = states
+                        .data_map
+                        .get::<smithay::wayland::shell::xdg::XdgToplevelSurfaceData>()?;
+                    let attributes = attributes
+                        .lock()
+                        .unwrap_or_else(std::sync::PoisonError::into_inner);
+                    Some(self.dispatch.core().bar().window_label(
+                        self.dispatch.core().label(attributes.app_id.as_deref()),
+                        attributes.title.as_deref(),
+                        attributes.app_id.as_deref(),
+                    ))
+                })?;
+                Some((title, focused))
+            })
+            .collect()
     }
 
     fn recording_bar(&self, bar: tehuti_core::bar::Bar) -> tehuti_core::bar::Bar {

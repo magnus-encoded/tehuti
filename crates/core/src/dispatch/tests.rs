@@ -6573,18 +6573,6 @@ fn update_chip_appears_for_newer_release_and_disappears_after_update() {
         !world.trace.contains(&Effect::ApplyUpdate),
         "voice alone never applies an update without confirmation"
     );
-    let state = tap_button(&mut world, state, ButtonName::East);
-    assert!(
-        state.update_confirmation_text().is_none(),
-        "Back cancels update confirmation"
-    );
-    assert!(
-        !world.trace.contains(&Effect::ApplyUpdate),
-        "cancelling never applies an update"
-    );
-
-    let state = world.run(state, speech_event("Update"));
-    world.trace.clear();
     let state = tap_button(&mut world, state, ButtonName::South);
     assert!(
         world.trace.contains(&Effect::ApplyUpdate),
@@ -6610,6 +6598,35 @@ fn update_chip_appears_for_newer_release_and_disappears_after_update() {
 }
 
 #[test]
+fn back_cancels_voice_update_confirmation() {
+    use crate::update::ReleaseInfo;
+    let mut world = World::default();
+    let state = world.run(
+        State::default(),
+        Input::ReleaseInfo(ReleaseInfo {
+            installed: Some("v0.148.2".into()),
+            previous: None,
+            available: Some("v0.149.0".into()),
+        }),
+    );
+    let state = world.run(state, speech_event("Update"));
+    assert!(
+        state.update_confirmation_text().is_some(),
+        "voice Update opens confirmation"
+    );
+    world.trace.clear();
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(
+        state.update_confirmation_text().is_none(),
+        "Back cancels update confirmation"
+    );
+    assert!(
+        !world.trace.contains(&Effect::ApplyUpdate),
+        "cancelling never applies an update"
+    );
+}
+
+#[test]
 fn dpad_focuses_update_chip_and_confirm_requires_fresh_press() {
     use crate::update::ReleaseInfo;
     let mut world = World::default();
@@ -6624,40 +6641,26 @@ fn dpad_focuses_update_chip_and_confirm_requires_fresh_press() {
     let state = tap_button(&mut world, state, ButtonName::Guide);
     assert_eq!(state.core().level(), crate::Level::Columns);
     let state = tap_button(&mut world, state, ButtonName::DpadDown);
-    assert!(
-        state.core().bar().update_focused(),
-        "D-pad focuses the bar update chip"
-    );
+    assert!(state.core().bar().update_focused(), "D-pad focuses bar chip");
     let state = tap_button(&mut world, state, ButtonName::East);
-    assert!(
-        !state.core().bar().update_focused(),
-        "Back cancels bar chip focus"
-    );
+    assert!(!state.core().bar().update_focused(), "Back cancels chip focus");
 
     let state = tap_button(&mut world, state, ButtonName::DpadDown);
-    assert!(
-        state.core().bar().update_focused(),
-        "D-pad refocuses the bar update chip"
-    );
     world.trace.clear();
     let state = world.run(state, pad_button(ButtonName::South, ButtonState::Pressed));
     assert!(
-        state.update_confirmation_text().is_some(),
-        "Confirm on the focused chip opens confirmation"
-    );
-    assert!(
-        !world.trace.contains(&Effect::ApplyUpdate),
-        "first Confirm press asks for confirmation instead of running immediately"
+        state.update_confirmation_text().is_some() && !world.trace.contains(&Effect::ApplyUpdate),
+        "Confirm on the focused chip opens confirmation without running immediately"
     );
     let state = world.run(state, pad_button(ButtonName::South, ButtonState::Released));
     assert!(
         !world.trace.contains(&Effect::ApplyUpdate),
         "releasing Confirm does not trigger the update"
     );
-    let state = tap_button(&mut world, state, ButtonName::South);
+    let _state = tap_button(&mut world, state, ButtonName::South);
     assert!(
         world.trace.contains(&Effect::ApplyUpdate),
-        "fresh Confirm press starts the update"
+        "fresh Confirm starts the update"
     );
     assert!(
         !world.trace.contains(&Effect::Apply(Action::Key {
@@ -6780,9 +6783,12 @@ fn repeated_failed_starts_offer_rollback_above_launcher_invitation() {
     let mut world = World::default();
     let launcher = crate::launcher::Launcher::invitation(vec![crate::launcher::Destination {
         name: "Notes".into(),
-        meta: String::new(),
-        route: 0,
-        icon: "book".into(),
+        extra_names: Vec::new(),
+        route: "book".into(),
+        open: false,
+        focused: false,
+        safety: crate::launcher::Safety::Launch,
+        settings: false,
     }]);
     let state = world.run(State::default(), Input::Launcher(Box::new(launcher)));
     let state = world.run(

@@ -19,6 +19,49 @@ use tehuti::{
 use tehuti_core::{dispatch::Category, overlay::Overlay};
 use tehuti_protocol::{ButtonName, ButtonState, Event, Text};
 
+struct ReleaseFixture {
+    _dir: tempfile::TempDir,
+    lib_dir: PathBuf,
+    state_dir: PathBuf,
+    log_path: PathBuf,
+    script: PathBuf,
+}
+
+impl ReleaseFixture {
+    fn new(with_previous: bool) -> Result<Self, Box<dyn core::error::Error>> {
+        let dir = tempfile::tempdir()?;
+        let lib_dir = dir.path().join("lib");
+        let state_dir = dir.path().join("state");
+        fs::create_dir_all(&lib_dir)?;
+        fs::create_dir_all(&state_dir)?;
+        write_executable(&lib_dir.join("tehuti"), "#!/bin/sh\nexit 0\n")?;
+        fs::write(lib_dir.join("tehuti.version"), "v0.148.2\n")?;
+        if with_previous {
+            write_executable(&lib_dir.join("tehuti.prev"), "#!/bin/sh\nexit 0\n")?;
+            fs::write(lib_dir.join("tehuti.prev.version"), "v0.148.1\n")?;
+        }
+        let log_path = dir.path().join("calls.log");
+        let script = stub_update_script(dir.path(), &log_path)?;
+        Ok(Self {
+            _dir: dir,
+            lib_dir,
+            state_dir,
+            log_path,
+            script,
+        })
+    }
+
+    fn manager(&self) -> Manager {
+        Manager::new(Config {
+            script: Some(self.script.clone()),
+            lib_dir: self.lib_dir.clone(),
+            state_dir: self.state_dir.clone(),
+            channel: None,
+            check_interval: DEFAULT_CHECK_INTERVAL,
+        })
+    }
+}
+
 fn write_executable(path: &Path, body: &str) -> Result<(), Box<dyn core::error::Error>> {
     fs::write(path, body)?;
     fs::set_permissions(path, fs::Permissions::from_mode(0o755))?;
@@ -79,27 +122,25 @@ fn test_output() -> Output {
     output
 }
 
+fn settings_pixels(compositor: &Compositor) -> Result<Vec<u8>, Box<dyn core::error::Error>> {
+    let mut artwork = compositor
+        .settings_buffer((1280, 720))
+        .ok_or("settings artwork missing")?;
+    let mut copy = Vec::new();
+    artwork.render().draw(|pixels| {
+        copy = pixels.to_vec();
+        Ok::<_, std::io::Error>(Vec::new())
+    })?;
+    Ok(copy)
+}
+
 #[test]
 fn update_check_shows_bar_chip_and_voice_update_applies_and_clears_chip()
 -> Result<(), Box<dyn core::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let lib_dir = directory.path().join("lib");
-    let state_dir = directory.path().join("state");
-    fs::create_dir_all(&lib_dir)?;
-    write_executable(&lib_dir.join("tehuti"), "#!/bin/sh\nexit 0\n")?;
-    fs::write(lib_dir.join("tehuti.version"), "v0.148.2\n")?;
-    let log_path = directory.path().join("calls.log");
-    let script = stub_update_script(directory.path(), &log_path)?;
-
+    let fixture = ReleaseFixture::new(false)?;
     let display = Display::<Compositor>::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
-    compositor.set_update_manager(Manager::new(Config {
-        script: Some(script),
-        lib_dir: lib_dir.clone(),
-        state_dir,
-        channel: None,
-        check_interval: DEFAULT_CHECK_INTERVAL,
-    }));
+    compositor.set_update_manager(fixture.manager());
     compositor.check_for_updates();
 
     poll_until(&mut compositor, |state| {
@@ -110,37 +151,6 @@ fn update_check_shows_bar_chip_and_voice_update_applies_and_clears_chip()
             .any(|segment| segment.text == "Update")
     })?;
 
-    // Focusing the bar chip with the D-pad changes the rasterised bar buffer.
-    let output = test_output();
-    let mut bar_buffer = tehuti::bar::Buffer::default();
-    let unfocused = bar_buffer
-        .update(&output, &compositor.voice_bar(), "12:00")
-        .ok_or("unfocused bar buffer missing")?
-        .0
-        .clone();
-    tap(&mut compositor, ButtonName::Guide);
-    tap(&mut compositor, ButtonName::DpadDown);
-    assert!(
-        compositor.voice_bar().update_focused(),
-        "D-pad focuses the Update chip on the bar"
-    );
-    let focused = bar_buffer
-        .update(&output, &compositor.voice_bar(), "12:00")
-        .ok_or("focused bar buffer missing")?
-        .0
-        .clone();
-    assert_ne!(
-        format!("{unfocused:?}"),
-        format!("{focused:?}"),
-        "focused update chip produces a fresh bar buffer"
-    );
-    tap(&mut compositor, ButtonName::East);
-    assert!(
-        !compositor.voice_bar().update_focused(),
-        "Back clears focus on the Update chip"
-    );
-
-    // Voice "Update" opens confirmation; Confirm runs tehuti-update and clears the chip.
     compositor.handle(&Event::Speech {
         text: Text::new("Update".into())?,
     });
@@ -166,11 +176,60 @@ fn update_check_shows_bar_chip_and_voice_update_applies_and_clears_chip()
     let notice = compositor.visible_notice_text().unwrap_or_default();
     assert!(
         notice.contains("UPDATED TO V0.149.0"),
-        "post-update notice names the installed release: {notice}"
+        "post-update notice names installed release: {notice}"
     );
     assert_eq!(
-        fs::read_to_string(lib_dir.join("tehuti.version"))?.trim(),
+        fs::read_to_string(fixture.lib_dir.join("tehuti.version"))?.trim(),
         "v0.149.0"
+    );
+    Ok(())
+}
+
+fn bar_pixels(
+    bar_buffer: &mut tehuti::bar::Buffer,
+    output: &Output,
+    compositor: &Compositor,
+) -> Result<Vec<u8>, Box<dyn core::error::Error>> {
+    let mut rendered = bar_buffer
+        .update(output, &compositor.voice_bar(), "12:00")
+        .ok_or("bar buffer missing")?
+        .0
+        .clone();
+    let mut copy = Vec::new();
+    rendered.render().draw(|pixels| {
+        copy = pixels.to_vec();
+        Ok::<_, std::io::Error>(Vec::new())
+    })?;
+    Ok(copy)
+}
+
+#[test]
+fn focusing_the_update_bar_chip_redraws_the_bar_buffer() -> Result<(), Box<dyn core::error::Error>> {
+    let display = Display::<Compositor>::new()?;
+    let mut compositor = Compositor::new(&display.handle())?;
+    compositor.set_release_info(tehuti_core::update::ReleaseInfo {
+        installed: Some("v0.148.2".into()),
+        previous: None,
+        available: Some("v0.149.0".into()),
+    });
+    let output = test_output();
+    let mut bar_buffer = tehuti::bar::Buffer::default();
+    let unfocused = bar_pixels(&mut bar_buffer, &output, &compositor)?;
+    tap(&mut compositor, ButtonName::Guide);
+    tap(&mut compositor, ButtonName::DpadDown);
+    assert!(
+        compositor.voice_bar().update_focused(),
+        "D-pad focuses the Update chip on the bar"
+    );
+    let focused = bar_pixels(&mut bar_buffer, &output, &compositor)?;
+    assert_ne!(
+        unfocused, focused,
+        "focused update chip changes the rasterised bar pixels"
+    );
+    tap(&mut compositor, ButtonName::East);
+    assert!(
+        !compositor.voice_bar().update_focused(),
+        "Back clears focus on the Update chip"
     );
     Ok(())
 }
@@ -178,26 +237,10 @@ fn update_check_shows_bar_chip_and_voice_update_applies_and_clears_chip()
 #[test]
 fn settings_previous_version_row_renders_and_runs_rollback_script() -> Result<(), Box<dyn core::error::Error>>
 {
-    let directory = tempfile::tempdir()?;
-    let lib_dir = directory.path().join("lib");
-    let state_dir = directory.path().join("state");
-    fs::create_dir_all(&lib_dir)?;
-    write_executable(&lib_dir.join("tehuti"), "#!/bin/sh\nexit 0\n")?;
-    write_executable(&lib_dir.join("tehuti.prev"), "#!/bin/sh\nexit 0\n")?;
-    fs::write(lib_dir.join("tehuti.version"), "v0.148.2\n")?;
-    fs::write(lib_dir.join("tehuti.prev.version"), "v0.148.1\n")?;
-    let log_path = directory.path().join("calls.log");
-    let script = stub_update_script(directory.path(), &log_path)?;
-
+    let fixture = ReleaseFixture::new(true)?;
     let display = Display::<Compositor>::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
-    compositor.set_update_manager(Manager::new(Config {
-        script: Some(script),
-        lib_dir: lib_dir.clone(),
-        state_dir,
-        channel: None,
-        check_interval: DEFAULT_CHECK_INTERVAL,
-    }));
+    compositor.set_update_manager(fixture.manager());
 
     compositor.handle(&Event::Speech {
         text: Text::new("Pop the hood.".into())?,
@@ -206,41 +249,18 @@ fn settings_previous_version_row_renders_and_runs_rollback_script() -> Result<()
         tap(&mut compositor, ButtonName::DpadDown);
     }
     assert_eq!(compositor.settings().category, Category::PreviousVersion);
-    let mut before_confirm = compositor
-        .settings_buffer((1280, 720))
-        .ok_or("settings artwork missing")?;
-    let mut before_pixels = Vec::new();
-    before_confirm.render().draw(|pixels| {
-        before_pixels = pixels.to_vec();
-        Ok::<_, std::io::Error>(Vec::new())
-    })?;
+    let before_pixels = settings_pixels(&compositor)?;
 
     tap(&mut compositor, ButtonName::South);
     assert!(
         compositor.settings().pending_rollback,
         "first Confirm highlights rollback confirmation"
     );
-    let mut confirming = compositor
-        .settings_buffer((1280, 720))
-        .ok_or("confirming settings artwork missing")?;
-    let mut confirming_pixels = Vec::new();
-    confirming.render().draw(|pixels| {
-        confirming_pixels = pixels.to_vec();
-        Ok::<_, std::io::Error>(Vec::new())
-    })?;
+    let confirming_pixels = settings_pixels(&compositor)?;
     assert_ne!(
         before_pixels, confirming_pixels,
         "confirmation state changes the rendered Settings page"
     );
-
-    if let Some(shot_dir) = std::env::var_os("SHOT_DIR") {
-        let mut rgba = Vec::new();
-        for pixel in confirming_pixels.as_chunks::<4>().0 {
-            rgba.extend_from_slice(&[pixel[2], pixel[1], pixel[0], pixel[3]]);
-        }
-        let path = Path::new(&shot_dir).join("settings-previous-version.png");
-        image::save_buffer(path, &rgba, 1280, 720, image::ColorType::Rgba8)?;
-    }
 
     tap(&mut compositor, ButtonName::South);
     poll_until(&mut compositor, |state| {
@@ -248,15 +268,15 @@ fn settings_previous_version_row_renders_and_runs_rollback_script() -> Result<()
     })?;
 
     assert_eq!(
-        fs::read_to_string(lib_dir.join("tehuti.version"))?.trim(),
+        fs::read_to_string(fixture.lib_dir.join("tehuti.version"))?.trim(),
         "v0.148.1"
     );
     assert_eq!(
-        fs::read_to_string(lib_dir.join("tehuti.skip"))?.trim(),
+        fs::read_to_string(fixture.lib_dir.join("tehuti.skip"))?.trim(),
         "v0.148.2"
     );
     assert!(
-        fs::read_to_string(&log_path)?.contains("--rollback"),
+        fs::read_to_string(&fixture.log_path)?.contains("--rollback"),
         "rollback reused tehuti-update --rollback"
     );
     Ok(())
@@ -265,29 +285,13 @@ fn settings_previous_version_row_renders_and_runs_rollback_script() -> Result<()
 #[test]
 fn repeated_failed_starts_auto_offer_rollback_and_confirm_executes_script()
 -> Result<(), Box<dyn core::error::Error>> {
-    let directory = tempfile::tempdir()?;
-    let lib_dir = directory.path().join("lib");
-    let state_dir = directory.path().join("state");
-    fs::create_dir_all(&lib_dir)?;
-    fs::create_dir_all(&state_dir)?;
-    write_executable(&lib_dir.join("tehuti"), "#!/bin/sh\nexit 0\n")?;
-    write_executable(&lib_dir.join("tehuti.prev"), "#!/bin/sh\nexit 0\n")?;
-    fs::write(lib_dir.join("tehuti.version"), "v0.148.2\n")?;
-    fs::write(lib_dir.join("tehuti.prev.version"), "v0.148.1\n")?;
-    fs::write(state_dir.join("rollback-offer"), "1000\n")?;
-    let log_path = directory.path().join("calls.log");
-    let script = stub_update_script(directory.path(), &log_path)?;
+    let fixture = ReleaseFixture::new(true)?;
+    fs::write(fixture.state_dir.join("rollback-offer"), "1000\n")?;
 
     let display = Display::<Compositor>::new()?;
     let mut compositor = Compositor::new(&display.handle())?;
     compositor.enable_invitation();
-    compositor.set_update_manager(Manager::new(Config {
-        script: Some(script),
-        lib_dir: lib_dir.clone(),
-        state_dir,
-        channel: None,
-        check_interval: DEFAULT_CHECK_INTERVAL,
-    }));
+    compositor.set_update_manager(fixture.manager());
 
     let Some((layer, prompt)) = compositor.visible_notice() else {
         return Err("expected auto-offered rollback confirmation".into());
@@ -303,7 +307,7 @@ fn repeated_failed_starts_auto_offer_rollback_and_confirm_executes_script()
         state.settings().previous_version.as_deref() == Some("v0.148.2")
     })?;
     assert_eq!(
-        fs::read_to_string(lib_dir.join("tehuti.version"))?.trim(),
+        fs::read_to_string(fixture.lib_dir.join("tehuti.version"))?.trim(),
         "v0.148.1"
     );
     Ok(())

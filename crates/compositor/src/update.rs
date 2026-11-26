@@ -211,48 +211,7 @@ impl Manager {
         let (sender, receiver) = mpsc::channel();
         self.action_rx = Some(receiver);
         let _worker = std::thread::spawn(move || {
-            let mut command = Command::new(&script);
-            if rollback {
-                let _arg = command.arg("--rollback");
-            }
-            apply_env(&mut command, &lib_dir, channel.as_deref());
-            let action = if rollback { "ROLLBACK" } else { "UPDATE" };
-            let outcome = match command
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped())
-                .output()
-            {
-                Ok(output) if output.status.success() => {
-                    if rollback {
-                        clear_start_failures(&state_dir);
-                    }
-                    let info = read_local_release_info(&lib_dir);
-                    if rollback {
-                        ActionResult::RolledBack {
-                            installed: info.installed,
-                            previous: info.previous,
-                        }
-                    } else {
-                        ActionResult::Updated {
-                            installed: info.installed,
-                            previous: info.previous,
-                        }
-                    }
-                }
-                Ok(output) => {
-                    let stderr = String::from_utf8_lossy(&output.stderr);
-                    let stdout = String::from_utf8_lossy(&output.stdout);
-                    let reason = first_error_line(&stderr)
-                        .or_else(|| first_error_line(&stdout))
-                        .map_or_else(|| format!("EXIT {}", output.status), str::to_owned);
-                    ActionResult::Failed { action, reason }
-                }
-                Err(error) => ActionResult::Failed {
-                    action,
-                    reason: error.to_string(),
-                },
-            };
+            let outcome = run_update_script(&script, &lib_dir, &state_dir, channel.as_deref(), rollback);
             let _sent = sender.send(outcome);
         });
         Ok(())
@@ -420,6 +379,57 @@ fn discover_script(home: &Path) -> Option<PathBuf> {
     }
     let search_path = std::env::var_os("PATH").unwrap_or_default();
     crate::system_menu::is_installed("tehuti-update", &search_path).then(|| PathBuf::from("tehuti-update"))
+}
+
+fn run_update_script(
+    script: &Path,
+    lib_dir: &Path,
+    state_dir: &Path,
+    channel: Option<&str>,
+    rollback: bool,
+) -> ActionResult {
+    let mut command = Command::new(script);
+    if rollback {
+        let _arg = command.arg("--rollback");
+    }
+    apply_env(&mut command, lib_dir, channel);
+    let action = if rollback { "ROLLBACK" } else { "UPDATE" };
+    match command
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+    {
+        Ok(output) if output.status.success() => {
+            if rollback {
+                clear_start_failures(state_dir);
+            }
+            let info = read_local_release_info(lib_dir);
+            if rollback {
+                ActionResult::RolledBack {
+                    installed: info.installed,
+                    previous: info.previous,
+                }
+            } else {
+                ActionResult::Updated {
+                    installed: info.installed,
+                    previous: info.previous,
+                }
+            }
+        }
+        Ok(output) => {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let reason = first_error_line(&stderr)
+                .or_else(|| first_error_line(&stdout))
+                .map_or_else(|| format!("EXIT {}", output.status), str::to_owned);
+            ActionResult::Failed { action, reason }
+        }
+        Err(error) => ActionResult::Failed {
+            action,
+            reason: error.to_string(),
+        },
+    }
 }
 
 fn apply_env(command: &mut Command, lib_dir: &Path, channel: Option<&str>) {

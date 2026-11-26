@@ -412,35 +412,7 @@ impl Settings {
                     .copied()
                     .unwrap_or(last);
             }
-            name if name == self.pad_family.button(Role::Confirm) => match self.category {
-                Category::Display => {
-                    self.page = Page::Display;
-                    self.focus_current_mode();
-                }
-                Category::Input => {
-                    self.page = Page::Input;
-                    self.input.focus = first(&self.input.rows());
-                    self.input.controller_cursor = 0;
-                    self.input.pending_disable = None;
-                    effects.push(Effect::ListMicrophones);
-                    effects.push(Effect::ListRemoteHosts);
-                }
-                Category::Wallpaper => {
-                    self.page = Page::Wallpaper;
-                    self.wallpaper_selected = self.wallpaper_current;
-                }
-                Category::PreviousVersion => {
-                    if self.previous_version.is_some() {
-                        if self.pending_rollback {
-                            self.pending_rollback = false;
-                            self.close(effects);
-                            effects.push(Effect::ApplyRollback);
-                        } else {
-                            self.pending_rollback = true;
-                        }
-                    }
-                }
-            },
+            name if name == self.pad_family.button(Role::Confirm) => self.confirm_category(effects),
             ButtonName::South
             | ButtonName::East
             | ButtonName::North
@@ -459,6 +431,38 @@ impl Settings {
             | ButtonName::Paddle2
             | ButtonName::Paddle3
             | ButtonName::Paddle4 => {}
+        }
+    }
+
+    fn confirm_category(&mut self, effects: &mut Vec<Effect>) {
+        match self.category {
+            Category::Display => {
+                self.page = Page::Display;
+                self.focus_current_mode();
+            }
+            Category::Input => {
+                self.page = Page::Input;
+                self.input.focus = first(&self.input.rows());
+                self.input.controller_cursor = 0;
+                self.input.pending_disable = None;
+                effects.push(Effect::ListMicrophones);
+                effects.push(Effect::ListRemoteHosts);
+            }
+            Category::Wallpaper => {
+                self.page = Page::Wallpaper;
+                self.wallpaper_selected = self.wallpaper_current;
+            }
+            Category::PreviousVersion => {
+                if self.previous_version.is_some() {
+                    if self.pending_rollback {
+                        self.pending_rollback = false;
+                        self.close(effects);
+                        effects.push(Effect::ApplyRollback);
+                    } else {
+                        self.pending_rollback = true;
+                    }
+                }
+            }
         }
     }
 
