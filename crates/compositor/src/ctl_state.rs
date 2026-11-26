@@ -202,15 +202,6 @@ impl Compositor {
         }
         let keyboard = self.on_screen_keyboard();
         if keyboard.is_open() {
-            let layer = if keyboard.symbols() {
-                "symbols"
-            } else if keyboard.shifted() {
-                "capitals"
-            } else {
-                "letters"
-            };
-            let count = self.keyboard_inputs.entry(layer.into()).or_default();
-            *count = count.saturating_add(1);
             return;
         }
         if let Input::Event {
@@ -257,18 +248,19 @@ impl Compositor {
     }
 
     pub(crate) fn finish_control_keyboard(&mut self) {
-        let (character_edits, word_edits) = self.on_screen_keyboard().edit_counts();
-        let sequence = self.next_control_sequence();
-        let mut inputs = core::mem::take(&mut self.keyboard_inputs);
-        for layer in ["letters", "capitals", "symbols"] {
-            let _count = inputs.entry(layer.into()).or_default();
+        for summary in self.dispatch.take_keyboard_summaries() {
+            let sequence = self.next_control_sequence();
+            let mut inputs = summary.inputs;
+            for layer in ["letters", "capitals", "symbols"] {
+                let _count = inputs.entry(layer.into()).or_default();
+            }
+            self.push_control_input(crate::ctl::Event::KeyboardSummary {
+                sequence,
+                inputs,
+                character_edits: summary.character_edits,
+                word_edits: summary.word_edits,
+            });
         }
-        self.push_control_input(crate::ctl::Event::KeyboardSummary {
-            sequence,
-            inputs,
-            character_edits,
-            word_edits,
-        });
     }
 
     fn control_events(&self) -> Vec<crate::ctl::Event> {

@@ -1149,7 +1149,11 @@ fn edit_counts_distinguish_characters_from_picked_words_and_reset_on_open() {
     press(&mut keyboard, ButtonName::South);
     assert_eq!(keyboard.edit_counts(), (2, 2));
     keyboard.close();
-    assert_eq!(keyboard.edit_counts(), (2, 2));
+    assert_eq!(keyboard.edit_counts(), (0, 0));
+    let summaries = keyboard.take_summaries();
+    assert_eq!(summaries.len(), 1);
+    assert_eq!(summaries[0].character_edits, 2);
+    assert_eq!(summaries[0].word_edits, 2);
     keyboard.open();
     assert_eq!(keyboard.edit_counts(), (0, 0));
 }

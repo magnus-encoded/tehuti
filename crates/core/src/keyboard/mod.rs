@@ -546,12 +546,20 @@ struct HeldDirection {
     repeating: Option<Duration>,
 }
 
+/// Anonymous activity from one opening of the on-screen keyboard.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionSummary {
+    pub inputs: std::collections::BTreeMap<String, u64>,
+    pub character_edits: u64,
+    pub word_edits: u64,
+}
+
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Keyboard {
     pad_family: crate::pad::PadFamily,
-    open: bool,
+    session: Option<SessionSummary>,
+    summaries: Vec<SessionSummary>,
     edits: Vec<Edit>,
-    edit_counts: (u64, u64),
     mode: DraftMode,
     field_kind: FieldKind,
     app: AppKind,
@@ -581,16 +589,17 @@ impl Keyboard {
 
     #[must_use]
     pub const fn is_open(&self) -> bool {
-        self.open
+        self.session.is_some()
     }
 
     /// Opens with the highlight on the first letter.
     pub fn open(&mut self) {
-        if self.open {
+        if self.is_open() {
             return;
         }
         *self = Self {
-            open: true,
+            session: Some(SessionSummary::default()),
+            summaries: core::mem::take(&mut self.summaries),
             pad_family: self.pad_family,
             mode: self.mode.clone(),
             word: self.word.clone(),
@@ -618,7 +627,9 @@ impl Keyboard {
 
     /// Closes, keeping the draft only when configured; consumed releases stay consumed.
     pub fn close(&mut self) {
-        self.open = false;
+        if let Some(session) = self.session.take() {
+            self.summaries.push(session);
+        }
         self.revealed = None;
         if !self.synced() && self.draft_retention == DraftRetention::Discard {
             self.draft.clear();
@@ -736,14 +747,38 @@ impl Keyboard {
     /// Character edits and picked-word edits in the current session.
     #[must_use]
     pub const fn edit_counts(&self) -> (u64, u64) {
-        self.edit_counts
+        match &self.session {
+            Some(session) => (session.character_edits, session.word_edits),
+            None => (0, 0),
+        }
+    }
+
+    /// Drains summaries produced by closing keyboard sessions.
+    pub fn take_summaries(&mut self) -> Vec<SessionSummary> {
+        core::mem::take(&mut self.summaries)
+    }
+
+    pub(crate) fn record_input(&mut self) {
+        let layer = if self.symbols() {
+            "symbols"
+        } else if self.shifted() {
+            "capitals"
+        } else {
+            "letters"
+        };
+        if let Some(session) = &mut self.session {
+            let count = session.inputs.entry(layer.into()).or_default();
+            *count = count.saturating_add(1);
+        }
     }
 
     fn record_edit(&mut self, range: Range<usize>, text: &str) {
-        if self.word.is_some() {
-            self.edit_counts.1 = self.edit_counts.1.saturating_add(1);
-        } else {
-            self.edit_counts.0 = self.edit_counts.0.saturating_add(1);
+        if let Some(session) = &mut self.session {
+            if self.word.is_some() {
+                session.word_edits = session.word_edits.saturating_add(1);
+            } else {
+                session.character_edits = session.character_edits.saturating_add(1);
+            }
         }
         if let Some(anchor) = self.application_anchor() {
             let start = self.caret.min(anchor);
@@ -930,7 +965,7 @@ impl Keyboard {
         if self.captured.contains(&name) {
             return Response::Consumed;
         }
-        if !self.open || !captures(name, shoulders_move_caret) {
+        if !self.is_open() || !captures(name, shoulders_move_caret) {
             return Response::Pass;
         }
         self.captured.push(name);
@@ -1093,7 +1128,7 @@ impl Keyboard {
     fn release_space(&mut self) -> Response {
         match self.space.take() {
             Some(SpaceHold::Talking) => Response::StopTalking,
-            Some(SpaceHold::Waiting(_)) if self.open => {
+            Some(SpaceHold::Waiting(_)) if self.is_open() => {
                 self.type_text(" ");
                 Response::Consumed
             }
@@ -1114,7 +1149,7 @@ impl Keyboard {
             return false;
         };
         *held = held.saturating_add(elapsed);
-        if *held < TALK_HOLD || !self.open || self.password_field_active() {
+        if *held < TALK_HOLD || self.session.is_none() || self.password_field_active() {
             return false;
         }
         self.start = Some(SpaceHold::Talking);
@@ -1127,7 +1162,7 @@ impl Keyboard {
             return false;
         };
         *held = held.saturating_add(elapsed);
-        if *held < TALK_HOLD || !self.open || self.password_field_active() {
+        if *held < TALK_HOLD || self.session.is_none() || self.password_field_active() {
             return false;
         }
         self.space = Some(SpaceHold::Talking);
@@ -1182,7 +1217,7 @@ impl Keyboard {
         }
         self.stick_engaged = true;
         self.hold_stick(x, horizontal, deflection);
-        if self.open {
+        if self.is_open() {
             if x.unsigned_abs() >= y.unsigned_abs() {
                 self.pick_word(x > 0);
             } else {
@@ -1213,7 +1248,7 @@ impl Keyboard {
         let Some(mut held) = self.held_stick else {
             return;
         };
-        if !self.open {
+        if !self.is_open() {
             return;
         }
         let mut elapsed = elapsed.min(Duration::from_secs(1));

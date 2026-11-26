@@ -406,6 +406,16 @@ impl State {
         &self.keyboard
     }
 
+    /// Ends text entry when the desktop session exits.
+    pub fn close_keyboard(&mut self) {
+        self.keyboard.close();
+    }
+
+    /// Drains completed keyboard sessions.
+    pub fn take_keyboard_summaries(&mut self) -> Vec<crate::keyboard::SessionSummary> {
+        self.keyboard.take_summaries()
+    }
+
     /// Drains the keyboard's explicit live replacements.
     pub fn take_keyboard_edits(&mut self) -> Vec<crate::keyboard::Edit> {
         self.keyboard.take_edits()
@@ -564,6 +574,7 @@ fn leave_gap(state: &mut State) -> Vec<Effect> {
 /// Holds a passthrough window's pad through a short focus gap to no window.
 fn focus_gap(state: &mut State, input: Input) -> GapStep {
     if input == Input::FocusedWindowClosed {
+        state.keyboard.close();
         if matches!(state.focus_gap, FocusGap::Away(_)) {
             return GapStep::Done(leave_gap(state));
         }
@@ -621,6 +632,15 @@ fn focus_gap(state: &mut State, input: Input) -> GapStep {
 /// Advances routing by one input. Performs no I/O.
 #[must_use]
 pub fn step(mut state: State, input: Input) -> (State, Vec<Effect>) {
+    if matches!(
+        &input,
+        Input::Event {
+            event: Event::Button { .. },
+            ..
+        } | Input::Sticks(_)
+    ) {
+        state.keyboard.record_input();
+    }
     let (input, mut gap) = match focus_gap(&mut state, input) {
         GapStep::Done(effects) => return (state, effects),
         GapStep::Route(input, effects) => (*input, effects),
@@ -1509,6 +1529,9 @@ fn recording_event(event: &Event, effects: &mut Vec<Effect>) -> bool {
 fn route_event(state: &mut State, event: Event, effects: &mut Vec<Effect>) {
     if matches!(event, Event::Focus { .. }) {
         state.tool_pad = ToolPad::Idle;
+        if matches!(event, Event::Focus { app_id: None, .. }) {
+            state.keyboard.close();
+        }
     }
     if launcher_event(state, &event, effects) {
         return;

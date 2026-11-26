@@ -541,6 +541,102 @@ mod windows {
         serde_json::from_slice(&output.stdout).unwrap()
     }
 
+    fn keyboard_summary_on_hide(hide: impl FnOnce(&mut Compositor, &std::path::Path)) {
+        let directory = tempfile::tempdir().unwrap();
+        let mut display = Display::<Compositor>::new().unwrap();
+        let mut compositor = Compositor::new(&display.handle()).unwrap();
+        tehuti::driver::headless_output(&display.handle(), &mut compositor).unwrap();
+        let mut driver = Driver::bind(directory.path(), tehuti::backend::Backend::Nested).unwrap();
+        let client = Client::new(&display, false);
+        client.paint(&mut display, &mut compositor, [10, 20, 30, 255]);
+        let open = |driver: &mut Driver, compositor: &mut Compositor| {
+            let _opened = driver
+                .execute(
+                    compositor,
+                    Request::Say {
+                        text: "keyboard".into(),
+                    },
+                )
+                .unwrap();
+            assert!(compositor.on_screen_keyboard().is_open());
+        };
+        open(&mut driver, &mut compositor);
+        let _typed = driver
+            .execute(
+                &mut compositor,
+                Request::Press {
+                    button: tehuti_protocol::ButtonName::South,
+                },
+            )
+            .unwrap();
+        hide(&mut compositor, directory.path());
+        assert!(!compositor.on_screen_keyboard().is_open());
+        assert_eq!(compositor.on_screen_keyboard().edit_counts(), (0, 0));
+        let summaries = |compositor: &mut Compositor| {
+            compositor
+                .control(tehuti::ctl::Command::Events, directory.path())
+                .unwrap()
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|event| event["kind"] == "keyboard_summary")
+                .cloned()
+                .collect::<Vec<_>>()
+        };
+        let first = summaries(&mut compositor);
+        assert_eq!(first.len(), 1);
+        assert_eq!(first[0]["character_edits"], 1);
+        assert_eq!(first[0]["word_edits"], 0);
+        assert_eq!(first[0]["inputs"]["letters"], 2);
+        open(&mut driver, &mut compositor);
+        let _closed = driver
+            .execute(
+                &mut compositor,
+                Request::Press {
+                    button: tehuti_protocol::ButtonName::East,
+                },
+            )
+            .unwrap();
+        let both = summaries(&mut compositor);
+        assert_eq!(both.len(), 2);
+        assert_eq!(both[1]["character_edits"], 0);
+        assert_eq!(both[1]["word_edits"], 0);
+        assert_eq!(both[1]["inputs"]["letters"], 1);
+        let _tick = driver
+            .execute(&mut compositor, Request::Advance { milliseconds: 100 })
+            .unwrap();
+        assert_eq!(summaries(&mut compositor), both);
+        client.finish();
+    }
+
+    #[test]
+    fn focus_loss_emits_one_keyboard_summary_and_resets_counts() {
+        keyboard_summary_on_hide(|compositor, _| {
+            compositor.handle(&tehuti_protocol::Event::Focus {
+                app_id: None,
+                title: None,
+            });
+        });
+    }
+
+    #[test]
+    fn window_close_emits_one_keyboard_summary_and_resets_counts() {
+        keyboard_summary_on_hide(|compositor, directory| {
+            let _closed = compositor
+                .control(tehuti::ctl::Command::Close { identity: None }, directory)
+                .unwrap();
+        });
+    }
+
+    #[test]
+    fn session_end_emits_one_keyboard_summary_and_resets_counts() {
+        keyboard_summary_on_hide(|compositor, directory| {
+            let _ended = compositor
+                .control(tehuti::ctl::Command::SessionRestart, directory)
+                .unwrap();
+        });
+    }
+
     #[test]
     #[expect(
         clippy::too_many_lines,
