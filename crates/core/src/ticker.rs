@@ -315,7 +315,7 @@ pub fn action_pieces(action: &Action) -> Vec<Piece> {
 
 /// The short name of a layout action; for voice units it matches the phrase voice accepts.
 #[must_use]
-pub fn layout_text(action: LayoutAction) -> String {
+pub(crate) fn layout_text(action: LayoutAction) -> String {
     match action {
         LayoutAction::FocusColumnLeft => "Column left".into(),
         LayoutAction::FocusColumnRight => "Column right".into(),

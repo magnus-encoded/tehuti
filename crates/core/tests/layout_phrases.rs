@@ -198,7 +198,7 @@ mod layout_phrases {
                 LayoutAction::MoveColumnRight,
             ];
             for action in units {
-                let shown = ticker::layout_text(action);
+                let shown = ticker::action_text(&Action::Layout { action });
                 prop_assert_eq!(layout_phrases::parse(&shown), Some(action), "label {:?}", shown);
             }
         }

@@ -725,6 +725,9 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
         let _command = menu_input(&mut state, event);
         return (state, Vec::new(), false);
     }
+    if talk_button(&state, event, plugin_active) {
+        return (state, Vec::new(), false);
+    }
     if let Some(actions) = columns_level(&state, event) {
         return (state, actions, false);
     }
@@ -745,7 +748,7 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     if !plugin_active && let Some(actions) = hold_key(&mut state, event) {
         return (state, actions, false);
     }
-    if let Some(actions) = talk_or_invoke(&state, event, plugin_active) {
+    if let Some(actions) = invoke_speech(&state, event) {
         return (state, actions, false);
     }
     if plugin_active && matches!(event, Event::Button { .. } | Event::Speech { .. }) {
@@ -761,11 +764,10 @@ fn route(mut state: State, event: &Event, plugin_active: bool) -> (State, Vec<Ac
     (state, actions, false)
 }
 
-/// A push-to-talk press does nothing more. Speech meets the built-in `invoke` verb
-/// ahead of plugin verbs and context phrases; its words snap to the focused and
-/// global contexts' invoke words.
-fn talk_or_invoke(state: &State, event: &Event, plugin_active: bool) -> Option<Vec<Action>> {
-    let transcript = match event {
+/// A push-to-talk button stops ahead of the columns level, global layer, stick modifiers and contexts.
+fn talk_button(state: &State, event: &Event, plugin_active: bool) -> bool {
+    matches!(
+        event,
         Event::Button {
             name,
             state: button_state,
@@ -773,15 +775,18 @@ fn talk_or_invoke(state: &State, event: &Event, plugin_active: bool) -> Option<V
             ownership::owner(
                 &state.ownership_view(plugin_active),
                 *name,
-                (*button_state).into()
+                (*button_state).into(),
             ),
             ownership::Owner::Talk(_)
-        ) =>
-        {
-            return Some(Vec::new());
-        }
-        Event::Speech { text } => text,
-        Event::Button { .. } | Event::Focus { .. } | Event::Tick { .. } => return None,
+        )
+    )
+}
+
+/// Speech meets the built-in `invoke` verb ahead of plugin verbs and context phrases;
+/// its words snap to the focused and global contexts' invoke words.
+fn invoke_speech(state: &State, event: &Event) -> Option<Vec<Action>> {
+    let Event::Speech { text: transcript } = event else {
+        return None;
     };
     let known = [focused_context(state), global_context(state)]
         .into_iter()
@@ -1160,7 +1165,7 @@ fn columns_level(state: &State, event: &Event) -> Option<Vec<Action>> {
     let Event::Button { name, state: button } = event else {
         return None;
     };
-    if state.level != Level::Columns || state.push_to_talk(*name) {
+    if state.level != Level::Columns {
         return None;
     }
     let action = columns_level_action(*name)?;
