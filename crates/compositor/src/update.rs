@@ -1,6 +1,6 @@
 //! Background release checking, update/rollback script execution, and failed-start tracking.
 
-use core::time::Duration;
+use core::{fmt::Write as _, time::Duration};
 use std::{
     fs,
     os::unix::fs::PermissionsExt as _,
@@ -12,10 +12,10 @@ use std::{
 use tehuti_core::update::ReleaseInfo;
 
 /// Default interval between background release checks.
-pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_secs(6 * 60 * 60);
+pub const DEFAULT_CHECK_INTERVAL: Duration = Duration::from_hours(6);
 
 /// Shortest allowed check interval when configured via `TEHUTI_UPDATE_CHECK_SECONDS`.
-pub const MIN_CHECK_INTERVAL: Duration = Duration::from_secs(60);
+pub const MIN_CHECK_INTERVAL: Duration = Duration::from_mins(1);
 
 /// Uptime after which a start counts as healthy and clears earlier failure markers.
 pub const HEALTHY_UPTIME: Duration = Duration::from_secs(30);
@@ -327,13 +327,12 @@ pub fn record_start(state_dir: &Path, now_secs: u64) -> bool {
     let attempts_path = state_dir.join(START_ATTEMPTS_FILE);
     let mut recent: Vec<u64> = fs::read_to_string(&attempts_path)
         .ok()
-        .map(|text| {
+        .map_or_else(Vec::new, |text| {
             text.lines()
                 .filter_map(|line| line.trim().parse::<u64>().ok())
                 .filter(|timestamp| now_secs.saturating_sub(*timestamp) <= FAILED_STARTS_WINDOW_SECS)
                 .collect()
-        })
-        .unwrap_or_default();
+        });
 
     if recent.len() >= FAILED_STARTS_THRESHOLD {
         offer = true;
@@ -345,7 +344,10 @@ pub fn record_start(state_dir: &Path, now_secs: u64) -> bool {
         let _drained = recent.drain(..excess);
     }
     if fs::create_dir_all(state_dir).is_ok() {
-        let body: String = recent.iter().map(|timestamp| format!("{timestamp}\n")).collect();
+        let mut body = String::new();
+        for timestamp in &recent {
+            let _formatted = writeln!(body, "{timestamp}");
+        }
         let _written = fs::write(&attempts_path, body);
     }
     offer

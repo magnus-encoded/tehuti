@@ -6781,15 +6781,19 @@ fn settings_previous_version_row_steps_and_requires_confirmation() {
 fn repeated_failed_starts_offer_rollback_above_launcher_invitation() {
     use crate::update::ReleaseInfo;
     let mut world = World::default();
-    let launcher = crate::launcher::Launcher::invitation(vec![crate::launcher::Destination {
-        name: "Notes".into(),
-        extra_names: Vec::new(),
-        route: "book".into(),
-        open: false,
-        focused: false,
-        safety: crate::launcher::Safety::Launch,
-        settings: false,
-    }]);
+    let launcher = crate::launcher::Launcher::new(
+        "notes",
+        vec![crate::launcher::Destination {
+            name: "Notes".into(),
+            extra_names: Vec::new(),
+            route: "book".into(),
+            open: false,
+            focused: false,
+            safety: crate::launcher::Safety::Launch,
+            settings: false,
+        }],
+        Some(1000),
+    );
     let state = world.run(State::default(), Input::Launcher(Box::new(launcher)));
     let state = world.run(
         state,

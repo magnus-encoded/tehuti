@@ -515,9 +515,9 @@ impl Compositor {
     pub fn set_update_manager(&mut self, manager: crate::update::Manager) {
         let (info, offer_rollback) = manager.initial_state(crate::update::unix_now_secs());
         self.update_manager = Some(manager);
-        let _rejection = self.dispatch(DispatchInput::ReleaseInfo(info));
+        let _info_rejection = self.dispatch(DispatchInput::ReleaseInfo(info));
         if offer_rollback {
-            let _rejection = self.dispatch(DispatchInput::OfferRollback);
+            let _offer_rejection = self.dispatch(DispatchInput::OfferRollback);
         }
         self.refresh_speech_vocabulary();
     }
