@@ -614,7 +614,7 @@ mod windows {
         keyboard_summary_on_hide(|compositor, _| {
             compositor.handle(&tehuti_protocol::Event::Focus {
                 app_id: None,
-                title: None,
+                title: String::new(),
             });
         });
     }
