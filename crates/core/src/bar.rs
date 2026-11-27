@@ -59,6 +59,7 @@ pub struct Bar {
     feedback: Option<Segment>,
     status: Option<String>,
     recording: bool,
+    adjuster: Option<Segment>,
     navigation: Option<Segment>,
     remaining: Option<Duration>,
     level: crate::Level,
@@ -144,6 +145,7 @@ impl Bar {
             feedback: None,
             status: None,
             recording: false,
+            adjuster: None,
             navigation: None,
             remaining: None,
             level: crate::Level::App,
@@ -276,6 +278,7 @@ impl Bar {
                 tone: Tone::Error,
             });
         }
+        segments.extend(self.adjuster.clone());
         segments.extend(self.feedback.clone());
         segments.extend(self.navigation.clone());
         segments
@@ -311,6 +314,16 @@ impl Bar {
     #[must_use]
     pub fn with_destination(mut self, name: String) -> Self {
         self.context = Some(name);
+        self
+    }
+
+    /// Shows an active adjuster's spoken unit name on the bar while adjusting.
+    #[must_use]
+    pub fn with_adjuster(mut self, text: String) -> Self {
+        self.adjuster = Some(Segment {
+            text,
+            tone: Tone::Live,
+        });
         self
     }
 
@@ -432,7 +445,7 @@ impl Bar {
     }
 
     /// Drops "Transcribing…" or "Resolving…" when the turn it waited on ended without a replacement.
-    fn clear_waiting(&mut self) {
+    pub(crate) fn clear_waiting(&mut self) {
         if self
             .feedback
             .as_ref()

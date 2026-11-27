@@ -33,7 +33,7 @@ impl TryFrom<Registration> for Adjuster {
         if name.is_empty()
             || name.chars().count() > 24
             || name.chars().any(char::is_control)
-            || name == "volume"
+            || matches!(name.as_str(), "volume" | "brightness")
         {
             return Err("adjuster name must be nonempty, at most 24 characters and not reserved".into());
         }

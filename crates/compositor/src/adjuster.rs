@@ -90,13 +90,7 @@ pub fn raster(gauge: &Gauge) -> Option<Vec<u8>> {
     let mut canvas = crate::settings::canvas::Canvas::new((WIDTH, HEIGHT))?;
     canvas.reference(280, 224);
     canvas.rectangle(0, 0, 280, 224, [32, 32, 32, 255]);
-    canvas.text(
-        16,
-        10,
-        &format!("{}  {}", gauge.name(), gauge.value()),
-        2,
-        [240, 236, 229, 255],
-    );
+    canvas.text(16, 10, &gauge.unit_label(), 2, [240, 236, 229, 255]);
     canvas.rectangle(TRACK_X, TRACK_Y, TRACK_W, TRACK_H, [80, 80, 80, 255]);
     let range = i64::from(gauge.maximum()).saturating_sub(i64::from(gauge.minimum()));
     let fill = i64::from(gauge.value())
@@ -113,7 +107,12 @@ pub fn raster(gauge: &Gauge) -> Option<Vec<u8>> {
         fill,
         [119, 167, 88, 255],
     );
-    canvas.text(16, 184, "STICK: ADJUST", 1, [240, 236, 229, 255]);
+    let adjust_hint = if gauge.supports_steps() {
+        "DPAD / STICK: ADJUST"
+    } else {
+        "STICK: ADJUST"
+    };
+    canvas.text(16, 184, adjust_hint, 1, [240, 236, 229, 255]);
     canvas.text(16, 198, "SOUTH: KEEP  EAST: REVERT", 1, [240, 236, 229, 255]);
     Some(canvas.pixels)
 }

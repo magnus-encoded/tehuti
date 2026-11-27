@@ -94,9 +94,11 @@ impl World {
                     | Effect::OpenLauncher(_)
                     | Effect::AdjusterValue { .. }
                     | Effect::ReadVolume
+                    | Effect::ReadBrightness
                     | Effect::ReadWindowSize(_)
                     | Effect::SetWindowSize { .. }
                     | Effect::SetVolume(_)
+                    | Effect::SetBrightness(_)
                     | Effect::SettingsMode(_)
                     | Effect::PersistMode(_)
                     | Effect::SettingsBarFont(_)
@@ -5637,6 +5639,242 @@ fn gauge_hide_delay_restarts_on_every_change() {
             .iter()
             .any(|effect| matches!(effect, Effect::SetVolume(_)))
     );
+}
+
+#[test]
+fn brightness_voice_sets_absolute_levels_and_clamps_out_of_range_values() {
+    use crate::adjuster::{BRIGHTNESS_MAX, BRIGHTNESS_MIN};
+    let cases = [
+        ("Brightness 40", 40, "brightness 40"),
+        ("brightness 40%", 40, "brightness 40"),
+        ("brightness 40 percent", 40, "brightness 40"),
+        ("brightness forty five", 45, "brightness 45"),
+        ("brightness maximum", BRIGHTNESS_MAX, "brightness maximum"),
+        ("brightness minimum", BRIGHTNESS_MIN, "brightness minimum"),
+        ("brightness 0", BRIGHTNESS_MIN, "brightness minimum"),
+        ("brightness 150", BRIGHTNESS_MAX, "brightness maximum"),
+    ];
+    for (phrase, expected_level, expected_bar) in cases {
+        let mut world = World::default();
+        let state = world.run(State::default(), speech_event(phrase));
+        assert!(
+            state.adjuster().is_none(),
+            "direct voice destination must not lock the pad: {phrase}"
+        );
+        assert!(
+            world.trace.contains(&Effect::SetBrightness(expected_level)),
+            "{phrase} must set brightness to {expected_level}: {:?}",
+            world.trace
+        );
+        assert!(
+            state
+                .core()
+                .bar()
+                .segments()
+                .iter()
+                .any(|segment| segment.text == expected_bar),
+            "{phrase} must show {expected_bar} on the bar: {:?}",
+            state.core().bar().segments()
+        );
+    }
+    for relative in ["brighter", "dimmer", "brightness up", "brightness down"] {
+        let mut world = World::default();
+        let state = world.run(State::default(), speech_event(relative));
+        assert!(
+            state.adjuster().is_none(),
+            "relative step phrase must not open brightness: {relative}"
+        );
+        assert!(
+            !world
+                .trace
+                .iter()
+                .any(|effect| matches!(effect, Effect::ReadBrightness | Effect::SetBrightness(_))),
+            "steps must never go on voice: {relative}"
+        );
+    }
+}
+
+#[test]
+fn every_brightness_unit_label_parses_back_to_its_own_level() {
+    use crate::adjuster::{
+        BRIGHTNESS_MAX, BRIGHTNESS_MIN, BrightnessPhrase, brightness_unit_name, parse_brightness_phrase,
+    };
+    assert_eq!(brightness_unit_name(BRIGHTNESS_MIN), "brightness minimum");
+    assert_eq!(brightness_unit_name(BRIGHTNESS_MAX), "brightness maximum");
+    assert_eq!(brightness_unit_name(40), "brightness 40");
+    for level in BRIGHTNESS_MIN..=BRIGHTNESS_MAX {
+        let label = brightness_unit_name(level);
+        assert_eq!(
+            parse_brightness_phrase(&label),
+            Some(BrightnessPhrase::Set(level)),
+            "signpost {label:?} must match the level {level}"
+        );
+    }
+}
+
+#[test]
+fn brightness_pad_nudges_by_fixed_step_and_confirms_with_south() {
+    use crate::adjuster::BRIGHTNESS_STEP;
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("brightness"));
+    assert!(
+        world.trace.contains(&Effect::ReadBrightness),
+        "saying brightness must read hardware level"
+    );
+    let state = world.run(state, Input::Brightness(Some(40)));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(40));
+    assert_eq!(
+        state
+            .adjuster()
+            .map(crate::adjuster::Gauge::unit_label)
+            .as_deref(),
+        Some("brightness 40")
+    );
+    let state = tap_button(&mut world, state, ButtonName::DpadUp);
+    let after_up = 40_u8.saturating_add(BRIGHTNESS_STEP);
+    assert_eq!(
+        state.adjuster().map(crate::adjuster::Gauge::value),
+        Some(i32::from(after_up))
+    );
+    assert!(
+        world.trace.contains(&Effect::SetBrightness(after_up)),
+        "first nudge must step by BRIGHTNESS_STEP"
+    );
+    let state = tap_button(&mut world, state, ButtonName::DpadDown);
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), Some(40));
+    let state = world.run(state, speech_event("brightness maximum"));
+    assert_eq!(
+        state
+            .adjuster()
+            .map(crate::adjuster::Gauge::unit_label)
+            .as_deref(),
+        Some("brightness maximum")
+    );
+    let state = tap_button(&mut world, state, ButtonName::South);
+    assert!(
+        state.adjuster().is_none(),
+        "confirm must close the brightness adjuster"
+    );
+    assert!(
+        !world
+            .trace
+            .iter()
+            .any(|effect| matches!(effect, Effect::Apply(Action::Key { .. }))),
+        "confirming brightness must not leak Enter"
+    );
+    assert!(
+        state
+            .core()
+            .bar()
+            .segments()
+            .iter()
+            .any(|segment| segment.text == "brightness maximum"),
+        "confirmed brightness unit must show on the bar"
+    );
+}
+
+#[test]
+fn holding_dpad_repeats_brightness_steps_and_release_stops_it() {
+    use crate::adjuster::{BRIGHTNESS_STEP, STEP_REPEAT_DELAY, STEP_REPEAT_INTERVAL};
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("brightness"));
+    let state = world.run(state, Input::Brightness(Some(40)));
+    let state = world.run(state, pad_button(ButtonName::DpadUp, ButtonState::Pressed));
+    let step = |count: u8| {
+        Some(i32::from(
+            40_u8.saturating_add(BRIGHTNESS_STEP.saturating_mul(count)),
+        ))
+    };
+    let tick = |elapsed| Event::Tick { elapsed };
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), step(1));
+
+    let state = world.event(
+        state,
+        tick(STEP_REPEAT_DELAY.saturating_sub(Duration::from_millis(1))),
+    );
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), step(1));
+
+    let state = world.event(state, tick(Duration::from_millis(1)));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), step(2));
+
+    let state = world.event(state, tick(STEP_REPEAT_INTERVAL.saturating_mul(2)));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), step(4));
+
+    let state = world.run(state, pad_button(ButtonName::DpadUp, ButtonState::Released));
+    let state = world.event(state, tick(STEP_REPEAT_INTERVAL.saturating_mul(3)));
+    assert_eq!(state.adjuster().map(crate::adjuster::Gauge::value), step(4));
+}
+
+#[test]
+fn brightness_clamps_steps_at_bounds_and_east_reverts() {
+    use crate::adjuster::{BRIGHTNESS_MAX, BRIGHTNESS_MIN};
+    let last_brightness = |world: &World| {
+        world.trace.iter().rev().find_map(|effect| {
+            if let Effect::SetBrightness(level) = effect {
+                Some(*level)
+            } else {
+                None
+            }
+        })
+    };
+    let mut world = World::default();
+    let state = world.run(State::default(), speech_event("brightness"));
+    let state = world.run(state, Input::Brightness(Some(98)));
+    let state = tap_button(&mut world, state, ButtonName::DpadUp);
+    assert_eq!(
+        state.adjuster().map(crate::adjuster::Gauge::value),
+        Some(i32::from(BRIGHTNESS_MAX))
+    );
+    let state = tap_button(&mut world, state, ButtonName::East);
+    assert!(state.adjuster().is_none(), "back must close the adjuster");
+    assert_eq!(last_brightness(&world), Some(98));
+
+    let mut low_world = World::default();
+    let low_state = low_world.run(State::default(), speech_event("brightness"));
+    let low_state = low_world.run(low_state, Input::Brightness(Some(3)));
+    let low_state = tap_button(&mut low_world, low_state, ButtonName::DpadDown);
+    assert_eq!(
+        low_state.adjuster().map(crate::adjuster::Gauge::value),
+        Some(i32::from(BRIGHTNESS_MIN))
+    );
+    assert_eq!(
+        low_state
+            .adjuster()
+            .map(crate::adjuster::Gauge::unit_label)
+            .as_deref(),
+        Some("brightness minimum")
+    );
+    let low_state = tap_button(&mut low_world, low_state, ButtonName::East);
+    assert!(low_state.adjuster().is_none(), "back must close at lower bound");
+    assert_eq!(last_brightness(&low_world), Some(3));
+}
+
+proptest! {
+    #[test]
+    fn brightness_steps_stay_clamped_and_back_restores_the_start(
+        contexts in arbitrary_contexts(),
+        start in 0_u8..=100,
+        steps in prop::collection::vec(prop::bool::ANY, 1..25),
+    ) {
+        use crate::adjuster::{
+            BRIGHTNESS_MAX, BRIGHTNESS_MIN, BrightnessPhrase, clamp_brightness, parse_brightness_phrase,
+        };
+        let mut world = World::default();
+        let state = world.run(configured(contexts, "org.example.Editor"), speech_event("brightness"));
+        let mut state = world.run(state, Input::Brightness(Some(start)));
+        for brighter in steps {
+            let button = if brighter { ButtonName::DpadUp } else { ButtonName::DpadDown };
+            state = tap_button(&mut world, state, button);
+            let gauge = state.adjuster().expect("gauge stays open during stepping");
+            prop_assert!((i32::from(BRIGHTNESS_MIN)..=i32::from(BRIGHTNESS_MAX)).contains(&gauge.value()));
+            let level = u8::try_from(gauge.value()).unwrap();
+            prop_assert_eq!(parse_brightness_phrase(&gauge.unit_label()), Some(BrightnessPhrase::Set(level)));
+        }
+        world.trace.clear();
+        let state = tap_button(&mut world, state, ButtonName::East);
+        prop_assert!(state.adjuster().is_none());
+        prop_assert!(world.trace.contains(&Effect::SetBrightness(clamp_brightness(start))));
+    }
 }
 
 fn no_focus() -> Input {

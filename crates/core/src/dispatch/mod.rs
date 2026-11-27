@@ -38,6 +38,8 @@ pub enum Input {
     /// Closes the session-start invitation once a window exists.
     CloseInvitation,
     Volume(Option<u8>),
+    /// Reply to [`Effect::ReadBrightness`]: the current hardware brightness percentage.
+    Brightness(Option<u8>),
     /// Reply to [`Effect::ReadWindowSize`]: the focused window's size in millionths of the screen.
     WindowSize(Option<u32>),
     Adjusters(Vec<(usize, tehuti_protocol::Adjuster)>),
@@ -143,6 +145,8 @@ pub enum Effect {
         finished: bool,
     },
     ReadVolume,
+    /// Query: read hardware brightness percentage. Reply [`Input::Brightness`].
+    ReadBrightness,
     /// Query: read the focused window's size. Reply [`Input::WindowSize`].
     ReadWindowSize(crate::adjuster::SizeAxis),
     /// Sets the focused window's size to a fraction of the screen, in millionths.
@@ -151,6 +155,8 @@ pub enum Effect {
         millionths: u32,
     },
     SetVolume(u8),
+    /// Sets hardware brightness to a clamped percentage.
+    SetBrightness(u8),
     PasswordSpeechIgnored,
     RunMenuCommand(crate::menu::Command),
     SettingsMode(usize),
@@ -330,9 +336,7 @@ pub struct State {
     overlay_stack: Vec<Overlay>,
     secret_prompt: SecretPrompt,
     adjuster: Option<crate::adjuster::Gauge>,
-    volume_pending: crate::adjuster::VolumeRead,
-    /// The axis whose size read is pending; set together with `volume_pending`.
-    size_pending: Option<crate::adjuster::SizeAxis>,
+    pending_read: crate::adjuster::PendingRead,
     adjusters: Vec<(usize, tehuti_protocol::Adjuster)>,
     adjuster_buttons: Vec<ButtonName>,
     /// The left stick's last vertical sample, so a gauge opens already moving.
@@ -364,8 +368,7 @@ impl State {
             overlay_stack: Vec::new(),
             secret_prompt: SecretPrompt::Hidden,
             adjuster: None,
-            volume_pending: crate::adjuster::VolumeRead::Idle,
-            size_pending: None,
+            pending_read: crate::adjuster::PendingRead::Idle,
             adjusters: Vec::new(),
             adjuster_buttons: Vec::new(),
             adjuster_stick: 0,
@@ -375,7 +378,7 @@ impl State {
     #[must_use]
     pub fn overlay_owns_pad(&self) -> bool {
         self.adjuster.is_some()
-            || self.volume_pending == crate::adjuster::VolumeRead::Pending
+            || self.pending_read.is_pending()
             || (self.tool_pad == ToolPad::Held && (self.keyboard.is_open() || self.mouse.active()))
     }
 
@@ -656,8 +659,8 @@ fn routed_step(mut state: State, input: Input) -> (State, Vec<Effect>) {
             ..
         } | Input::ControllerDisconnected
     ) {
-        if state.volume_pending == crate::adjuster::VolumeRead::Pending {
-            state.volume_pending = crate::adjuster::VolumeRead::Cancelled;
+        if state.pending_read.is_pending() {
+            state.pending_read = crate::adjuster::PendingRead::Idle;
         }
         if let Some(mut gauge) = state.adjuster.take() {
             gauge.revert();
@@ -689,8 +692,19 @@ fn sync_keyboard_config(state: &mut State) {
 
 /// Opens the volume gauge once the pending read arrives.
 fn volume_read(mut state: State, value: Option<u8>) -> State {
-    if core::mem::take(&mut state.volume_pending) == crate::adjuster::VolumeRead::Pending {
+    if state.pending_read == crate::adjuster::PendingRead::Volume {
+        state.pending_read = crate::adjuster::PendingRead::Idle;
         state.adjuster = value.map(crate::adjuster::Gauge::volume);
+        adjustment::seed_stick(&mut state);
+    }
+    state
+}
+
+/// Opens the brightness gauge once the pending read arrives.
+fn brightness_read(mut state: State, value: Option<u8>) -> State {
+    if state.pending_read == crate::adjuster::PendingRead::Brightness {
+        state.pending_read = crate::adjuster::PendingRead::Idle;
+        state.adjuster = value.map(crate::adjuster::Gauge::brightness);
         adjustment::seed_stick(&mut state);
     }
     state
@@ -698,11 +712,9 @@ fn volume_read(mut state: State, value: Option<u8>) -> State {
 
 /// Opens a size stepper once the pending read arrives.
 fn size_read(mut state: State, value: Option<u32>) -> State {
-    let axis = state.size_pending.take();
-    if core::mem::take(&mut state.volume_pending) == crate::adjuster::VolumeRead::Pending {
-        state.adjuster = axis
-            .zip(value)
-            .map(|(axis, current)| crate::adjuster::Gauge::size(axis, current));
+    if let crate::adjuster::PendingRead::Size(axis) = state.pending_read {
+        state.pending_read = crate::adjuster::PendingRead::Idle;
+        state.adjuster = value.map(|current| crate::adjuster::Gauge::size(axis, current));
     }
     state
 }
@@ -729,6 +741,7 @@ fn step_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
             (state, Vec::new())
         }
         Input::Volume(value) => (volume_read(state, value), Vec::new()),
+        Input::Brightness(value) => (brightness_read(state, value), Vec::new()),
         Input::WindowSize(value) => (size_read(state, value), Vec::new()),
         Input::ChoiceList(slots) => {
             state.launcher = None;
@@ -800,6 +813,7 @@ fn frame_input(state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::Brightness(_)
         | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
@@ -860,6 +874,7 @@ fn state_input(mut state: State, input: &Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::Brightness(_)
         | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::DisplayModes { .. }
@@ -904,6 +919,10 @@ fn run_tasks(mut state: State, tasks: Vec<Task>, effects: Vec<Effect>) -> (State
 }
 
 /// Inputs that only update the settings view.
+#[expect(
+    clippy::too_many_lines,
+    reason = "one exhaustive match over every input, handling settings variants"
+)]
 fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
     let mut effects = Vec::new();
     match input {
@@ -941,6 +960,7 @@ fn settings_input(mut state: State, input: Input) -> (State, Vec<Effect>) {
         | Input::CloseInvitation
         | Input::Adjusters(_)
         | Input::Volume(_)
+        | Input::Brightness(_)
         | Input::WindowSize(_)
         | Input::ChoiceList(_)
         | Input::Tick { .. }
@@ -1041,8 +1061,8 @@ fn release_pad(state: &mut State, handoff: Handoff, effects: &mut Vec<Effect>) {
 fn release_layer(state: &mut State, layer: Overlay, handoff: Handoff, effects: &mut Vec<Effect>) {
     match layer {
         Overlay::Adjuster => {
-            if state.volume_pending == crate::adjuster::VolumeRead::Pending {
-                state.volume_pending = crate::adjuster::VolumeRead::Cancelled;
+            if state.pending_read.is_pending() {
+                state.pending_read = crate::adjuster::PendingRead::Idle;
             }
             if let Some(mut gauge) = state.adjuster.take() {
                 gauge.revert();
@@ -1112,9 +1132,7 @@ fn open_overlays(state: &State) -> Vec<Overlay> {
     STACK
         .into_iter()
         .filter(|layer| match layer {
-            Overlay::Adjuster => {
-                state.adjuster.is_some() || state.volume_pending == crate::adjuster::VolumeRead::Pending
-            }
+            Overlay::Adjuster => state.adjuster.is_some() || state.pending_read.is_pending(),
             Overlay::Settings => state.settings.open,
             Overlay::ChoiceList => state.choice_list_open(),
             Overlay::SystemMenu => state.core.menu().is_some(),
@@ -1463,7 +1481,7 @@ fn adjuster_tick(state: &mut State, event: &Event, effects: &mut Vec<Effect>) ->
     let Event::Tick { elapsed } = event else {
         return false;
     };
-    if state.adjuster.is_none() && state.volume_pending != crate::adjuster::VolumeRead::Pending {
+    if state.adjuster.is_none() && !state.pending_read.is_pending() {
         return false;
     }
     if let Some(actions) = crate::escape_chord(&mut state.core, event) {
@@ -1673,6 +1691,11 @@ fn reserved_input(state: &mut State, event: &Event, effects: &mut Vec<Effect>) -
     } = event
         && (state.choice_buttons.contains(name) || state.adjuster_buttons.contains(name))
     {
+        if state.adjuster_buttons.contains(name)
+            && let Some(gauge) = &mut state.adjuster
+        {
+            gauge.release_button(*name);
+        }
         state.adjuster_buttons.retain(|held| held != name);
         state.choice_buttons.retain(|held| held != name);
         return true;

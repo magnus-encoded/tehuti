@@ -62,6 +62,7 @@ const fn dispatch_elapsed(input: &DispatchInput) -> core::time::Duration {
         | DispatchInput::ClockRead(elapsed) => *elapsed,
         DispatchInput::Menu(_)
         | DispatchInput::Volume(_)
+        | DispatchInput::Brightness(_)
         | DispatchInput::WindowSize(_)
         | DispatchInput::Adjusters(_)
         | DispatchInput::Launcher(_)
@@ -140,6 +141,7 @@ pub struct Compositor {
     recentre_requests: Vec<String>,
     input_choices: Option<crate::input_choice_store::Store>,
     volume: Option<crate::volume::Backend>,
+    brightness: Option<crate::brightness::Backend>,
     remote_host_listing: Option<std::sync::mpsc::Receiver<Vec<String>>>,
     microphone_listing: Option<std::sync::mpsc::Receiver<Vec<tehuti_core::dispatch::Microphone>>>,
     previous_tick: Instant,
@@ -311,6 +313,7 @@ impl Compositor {
             recentre_requests: Vec::new(),
             input_choices: None,
             volume: None,
+            brightness: None,
             remote_host_listing: None,
             microphone_listing: None,
             injected_clock: None,
@@ -1429,6 +1432,10 @@ impl Compositor {
         self.volume = Some(backend);
     }
 
+    pub fn set_brightness_backend(&mut self, backend: crate::brightness::Backend) {
+        self.brightness = Some(backend);
+    }
+
     #[must_use]
     pub const fn adjuster(&self) -> Option<&tehuti_core::adjuster::Gauge> {
         self.dispatch.adjuster()
@@ -2309,6 +2316,8 @@ impl Compositor {
             | DispatchEffect::OpenLauncher(_)
             | DispatchEffect::ReadVolume
             | DispatchEffect::SetVolume(_)
+            | DispatchEffect::ReadBrightness
+            | DispatchEffect::SetBrightness(_)
             | DispatchEffect::ReadWindowSize(_)
             | DispatchEffect::SetWindowSize { .. }
             | DispatchEffect::AdjusterValue { .. }
@@ -2568,6 +2577,10 @@ impl Compositor {
             }
             DispatchEffect::ReadVolume => self.volume_request(crate::volume::Request::Read),
             DispatchEffect::SetVolume(value) => self.volume_request(crate::volume::Request::Set(value)),
+            DispatchEffect::ReadBrightness => self.brightness_request(crate::brightness::Request::Read),
+            DispatchEffect::SetBrightness(value) => {
+                self.brightness_request(crate::brightness::Request::Set(value));
+            }
             DispatchEffect::ReadWindowSize(axis) => {
                 let size = axis.read(&self.placement.snapshot());
                 let _rejection = self.dispatch(DispatchInput::WindowSize(size));
@@ -2695,6 +2708,7 @@ impl Compositor {
                 self.poll_remote_hosts();
                 self.poll_menu_failures();
                 self.poll_volume();
+                self.poll_brightness();
             }
             DispatchEffect::ConfirmPressed(pressed) => self.confirmation.confirm_pressed(pressed),
             DispatchEffect::ResetSecretFocus => {
@@ -3600,6 +3614,9 @@ impl Compositor {
 
     fn recording_bar(&self, bar: tehuti_core::bar::Bar) -> tehuti_core::bar::Bar {
         let mut bar = bar.with_recording(self.recording_active());
+        if let Some(gauge) = self.adjuster().filter(|gauge| !gauge.is_stepper()) {
+            bar = bar.with_adjuster(gauge.unit_label());
+        }
         bar.font = self.settings().bar_font;
         bar
     }
@@ -4849,6 +4866,58 @@ impl Compositor {
                 }
                 crate::volume::Reply::Set(Ok(())) => {}
             }
+        }
+    }
+
+    fn brightness_request(&mut self, request: crate::brightness::Request) {
+        if self.brightness.is_none() {
+            match crate::brightness::Backend::start() {
+                Ok(backend) => self.brightness = Some(backend),
+                Err(error) => {
+                    tracing::warn!(%error, "brightness worker unavailable");
+                    let _rejection = self.dispatch(DispatchInput::Brightness(None));
+                    self.show_notice("BRIGHTNESS UNAVAILABLE");
+                    return;
+                }
+            }
+        }
+        if let Some(backend) = &self.brightness
+            && let Err(error) = backend.request(request)
+        {
+            tracing::warn!(%error, "brightness worker unavailable");
+            self.brightness = None;
+            let _rejection = self.dispatch(DispatchInput::Brightness(None));
+            self.show_notice("BRIGHTNESS UNAVAILABLE");
+        }
+    }
+
+    fn poll_brightness(&mut self) {
+        let replies: Vec<_> = self
+            .brightness
+            .as_ref()
+            .map_or_else(Vec::new, |backend| backend.poll().collect());
+        for reply in replies {
+            match reply {
+                crate::brightness::Reply::Read(result) => {
+                    if let Err(error) = &result {
+                        tracing::warn!(%error, "brightness read failed");
+                        self.show_brightness_error(error);
+                    }
+                    let _rejection = self.dispatch(DispatchInput::Brightness(result.ok()));
+                }
+                crate::brightness::Reply::Set(Err(error)) => {
+                    tracing::warn!(%error, "brightness write failed");
+                    self.show_brightness_error(&error);
+                }
+                crate::brightness::Reply::Set(Ok(())) => {}
+            }
+        }
+    }
+
+    fn show_brightness_error(&mut self, error: &crate::brightness::Error) {
+        match error {
+            crate::brightness::Error::NoDevice => self.show_notice("NO BACKLIGHT DEVICE"),
+            crate::brightness::Error::Failed(_) => self.show_notice("BRIGHTNESS UNAVAILABLE"),
         }
     }
 }
